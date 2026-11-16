@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Playnite extension that lets Win2Console use Playnite as its library backend. -->
+  <PropertyGroup>
+    <TargetFramework>net462</TargetFramework>
+    <AssemblyName>Win2ConsoleBridge</AssemblyName>
+    <RootNamespace>Win2ConsoleBridge</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <!-- Built against the installed Playnite's own SDK so versions always match. -->
+    <Reference Include="Playnite.SDK">
+      <HintPath>$(LOCALAPPDATA)\Playnite\Playnite.SDK.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="PresentationFramework" />
+    <Reference Include="PresentationCore" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="System.Xaml" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="extension.yaml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

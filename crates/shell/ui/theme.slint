@@ -1,0 +1,50 @@
+// Shared look, modelled on the Xbox Series X|S dashboard (2020). All sizes are design pixels on a
+// 1920×1080 canvas, multiplied by `Theme.scale` (set by the window to fit its size).
+
+export global Theme {
+    in-out property <float> scale: 1.0;
+    in-out property <color> accent: #107C10;
+
+    // Neutral greys measured from the dashboard.
+    out property <color> page: #1F1F1F;
+    out property <color> sidebar: #181818;
+    out property <color> divider: #2E2E2E;
+    out property <color> tile: #2D2D2D;
+    out property <color> tile-dark: #1A1A1A;
+    out property <color> panel: #262626;
+    out property <color> text: #FFFFFF;
+    out property <color> text-dim: #B3B3B3;
+    out property <color> text-faint: #FFFFFF8C;
+    out property <color> hint-pill: #000000A6;
+
+    // Accent variants.
+    out property <color> focus: accent.brighter(0.4);
+    out property <color> accent-tile: accent.darker(0.1);
+    out property <color> placeholder: accent.mix(#1F1F1F, 0.45);
+
+    out property <string> ui-font: "Segoe UI";
+    out property <string> icon-font: "Segoe MDL2 Assets";
+
+    out property <length> u: 1px * scale;
+    out property <length> radius: 3px * scale;
+    out property <duration> anim: 160ms;
+}
+
+// Segoe MDL2 Assets codepoints (present on Windows 10 and 11).
+export global Icons {
+    out property <string> settings: "\u{E713}";
+    out property <string> power: "\u{E7E8}";
+    out property <string> add: "\u{E710}";
+    out property <string> library: "\u{E8F1}";
+    out property <string> home: "\u{E80F}";
+    out property <string> search: "\u{E721}";
+    out property <string> switch-user: "\u{E748}";
+    out property <string> game: "\u{E7FC}";
+    out property <string> chevron-down: "\u{E70D}";
+    out property <string> pin: "\u{E718}";
+    out property <string> check: "\u{E73E}";
+    out property <string> menu: "\u{E700}";
+    out property <string> view: "\u{E8A9}";
+    // Built-in avatar glyphs, indexed by Avatar::Builtin { index }.
+    out property <[string]> avatars: ["\u{E7FC}", "\u{E735}", "\u{EB52}", "\u{E945}", "\u{E909}", "\u{E706}", "\u{E708}", "\u{E8D6}"];
+}

@@ -1,0 +1,101 @@
+import { Theme, Icons } from "theme.slint";
+import { ProfileItem, Avatar, Icon } from "components.slint";
+
+// "Who's playing?" at startup: a row of profile pictures plus "Add new".
+export component ProfilePickerScreen inherits Rectangle {
+    in property <[ProfileItem]> profiles;
+    in property <int> selected;
+    callback clicked(int);
+    callback hovered(int);
+
+    property <length> size: 200 * Theme.u;
+    property <length> gap: 64 * Theme.u;
+    property <int> count: profiles.length + 1;
+    property <length> row-width: count * size + (count - 1) * gap;
+    property <length> row-y: root.height * 0.38;
+
+    Text {
+        y: root.height * 0.2;
+        width: root.width;
+        horizontal-alignment: center;
+        text: "Who's playing?";
+        font-family: Theme.ui-font;
+        font-size: 56px * Theme.scale;
+        font-weight: 300;
+        color: Theme.text;
+    }
+
+    for p[i] in profiles: Rectangle {
+        x: (root.width - row-width) / 2 + i * (size + gap);
+        y: row-y;
+        width: size;
+        height: size + 80 * Theme.u;
+        Rectangle {
+            x: -8 * Theme.u;
+            y: -8 * Theme.u;
+            width: size + 16 * Theme.u;
+            height: self.width;
+            border-radius: self.width / 2;
+            border-width: selected == i ? 4px * Theme.scale : 0;
+            border-color: p.accent.brighter(0.4);
+            drop-shadow-blur: selected == i ? 22px * Theme.scale : 0;
+            drop-shadow-color: selected == i ? p.accent.with-alpha(0.9) : transparent;
+            animate border-width, drop-shadow-blur { duration: Theme.anim; }
+        }
+        Avatar { y: 0; profile: p; size: size; }
+        Text {
+            y: size + 26 * Theme.u;
+            width: parent.width + 40 * Theme.u;
+            x: -20 * Theme.u;
+            text: p.name;
+            font-family: Theme.ui-font;
+            font-size: 27px * Theme.scale;
+            color: selected == i ? Theme.text : Theme.text-dim;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        TouchArea {
+            clicked => { root.clicked(i); }
+            changed has-hover => { if self.has-hover { root.hovered(i); } }
+        }
+    }
+
+    Rectangle {
+        x: (root.width - row-width) / 2 + profiles.length * (size + gap);
+        y: row-y;
+        width: size;
+        height: size + 80 * Theme.u;
+        Rectangle {
+            x: -8 * Theme.u;
+            y: -8 * Theme.u;
+            width: size + 16 * Theme.u;
+            height: self.width;
+            border-radius: self.width / 2;
+            border-width: selected == profiles.length ? 4px * Theme.scale : 0;
+            border-color: Theme.focus;
+            drop-shadow-blur: selected == profiles.length ? 22px * Theme.scale : 0;
+            drop-shadow-color: selected == profiles.length ? Theme.accent.with-alpha(0.9) : transparent;
+        }
+        Rectangle {
+            width: size;
+            height: size;
+            y: 0;
+            border-radius: size / 2;
+            background: #FFFFFF26;
+            Icon { glyph: Icons.add; size: 60px * Theme.scale; }
+        }
+        Text {
+            y: size + 26 * Theme.u;
+            width: parent.width;
+            text: "Add new";
+            font-family: Theme.ui-font;
+            font-size: 27px * Theme.scale;
+            color: selected == profiles.length ? Theme.text : Theme.text-dim;
+            horizontal-alignment: center;
+        }
+        TouchArea {
+            clicked => { root.clicked(profiles.length); }
+            changed has-hover => { if self.has-hover { root.hovered(profiles.length); } }
+        }
+    }
+}

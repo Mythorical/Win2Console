@@ -1,0 +1,13 @@
+/target
+*.pdb
+# Reference videos are large third-party recordings; kept locally only.
+/ui-refs/*.webm
+/playnite-extension/bin
+/playnite-extension/obj
+/third_party
+# Kept local: Microsoft reference material, personal screenshots, prompt notes, editor leftovers.
+/ui-refs
+/docs/screenshots
+/touch.txt
+/prompt.txt
+*.save

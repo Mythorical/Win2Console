@@ -1,0 +1,10 @@
+[package]
+name = "cs-input"
+description = "Controller input (SDL3 gamepad) mapped to unified navigation actions."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sdl3.workspace = true
+tracing.workspace = true

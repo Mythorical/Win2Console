@@ -1,0 +1,107 @@
+import { Theme, Icons } from "theme.slint";
+
+export struct SplashPetal {
+    path: string,
+    // 0 = dark green, 1 = light green, 2 = white highlight
+    shade: int,
+    opacity: float,
+}
+
+// Startup animation (shapes computed per frame in src/splash.rs on a 1920×1080 viewbox).
+export component SplashScreen inherits Rectangle {
+    in property <string> outline;
+    in property <float> outline-opacity;
+    in property <[SplashPetal]> petals;
+    in property <float> sphere-radius;
+    in property <float> sphere-opacity;
+    in property <float> emblem-radius;
+    in property <float> emblem-opacity;
+    in property <float> wordmark-opacity;
+    in property <float> fade: 1;
+    in property <float> shadow-radius;
+    in property <float> shadow-opacity;
+
+    background: #0C5A0E;
+    opacity: fade;
+
+    // 16:9 stage covering the window (Path keeps its viewbox aspect ratio).
+    stage := Rectangle {
+        width: max(root.width, root.height * 16 / 9);
+        height: self.width * 9 / 16;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        property <length> unit: self.width / 1920;
+        // Backdrop with a floor horizon, like the reference.
+        Rectangle { background: @linear-gradient(180deg, #0D6F10 0%, #129016 70%, #2BA32A 71.5%, #1E951E 100%); }
+        // Floor shadow under the shape.
+        Rectangle {
+            x: (960 - root.shadow-radius) * parent.unit;
+            y: 760 * parent.unit;
+            width: root.shadow-radius * 2 * parent.unit;
+            height: root.shadow-radius * 0.22 * parent.unit;
+            border-radius: self.height / 2;
+            background: @radial-gradient(circle, #00000080 0%, #00000000 70%);
+            opacity: root.shadow-opacity;
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            commands: root.outline;
+            stroke: #FFFFFFE6;
+            stroke-width: 2.5 * parent.unit;
+            opacity: root.outline-opacity;
+        }
+        // Shaded ball the folds wrap around.
+        Rectangle {
+            x: (960 - root.sphere-radius) * parent.unit;
+            y: (470 - root.sphere-radius) * parent.unit;
+            width: root.sphere-radius * 2 * parent.unit;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: @radial-gradient(circle, #5CC253 0%, #2E9A2A 45%, #0D5E10 100%);
+            opacity: root.sphere-opacity;
+        }
+        for p in root.petals: Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            commands: p.path;
+            fill: p.shade == 2 ? #EAF7E6 : p.shade == 1 ? #46B43F : #0E6A12;
+            stroke: #0B5A0E60;
+            stroke-width: 1px;
+            opacity: p.opacity;
+        }
+        // Emblem
+        Rectangle {
+            x: (960 - root.emblem-radius) * parent.unit;
+            y: (470 - root.emblem-radius) * parent.unit;
+            width: root.emblem-radius * 2 * parent.unit;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: #FFFFFF;
+            opacity: root.emblem-opacity;
+            Text {
+                text: Icons.game;
+                font-family: Theme.icon-font;
+                font-size: parent.height * 0.55;
+                color: #107C10;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            y: 560 * parent.unit;
+            width: parent.width;
+            text: "Win2Console";
+            font-family: Theme.ui-font;
+            font-size: 64 * parent.unit;
+            font-weight: 300;
+            color: #FFFFFF;
+            horizontal-alignment: center;
+            opacity: root.wordmark-opacity;
+        }
+    }
+}

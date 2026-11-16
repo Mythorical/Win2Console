@@ -1,0 +1,121 @@
+import { Theme, Icons } from "theme.slint";
+import { Tile, ArtTile } from "components.slint";
+
+// Home. Mode 0 is the "hero" grid (big recent tile, shortcut squares, My games & apps + recent row);
+// mode 1 shows one named section (Pinned, Steam, ...) with the following section titles stacked below,
+// like the Xbox dashboard when you scroll down.
+export component HomeScreen inherits Rectangle {
+    in property <int> mode;
+    in property <[Tile]> hero;
+    in property <int> hero-focus;
+    // Titles of the sections below the hero grid.
+    in property <[string]> sections;
+    in property <int> section;
+    in property <[Tile]> section-tiles;
+    in property <int> section-focus;
+    in property <float> section-scroll;
+    // Horizontal scroll of the row of squares (design px); the row slides inside its own clipped strip.
+    in property <float> row-scroll;
+    // Moving between sections (0→1, driven from Rust) and its direction (1 = down, -1 = up).
+    in property <float> section-t: 1;
+    in property <int> section-dir: 1;
+    callback clicked(int);
+    callback hovered(int);
+
+    if mode == 0: Rectangle {
+        y: (1 - root.section-t) * root.section-dir * 90px * Theme.scale;
+        opacity: 0.3 + 0.7 * root.section-t;
+        // Row strip: starts just right of the big tile, with room for focus rings.
+        Rectangle {
+            x: 516 * Theme.u;
+            y: 420 * Theme.u;
+            width: root.width - self.x;
+            height: 240 * Theme.u;
+            clip: true;
+            Rectangle {
+                x: -root.row-scroll * Theme.u;
+                animate x { duration: 280ms; easing: ease-out; }
+                for t[i] in hero: ArtTile {
+                    visible: t.y == 440;
+                    x: (t.x - 516) * Theme.u;
+                    y: (t.y - 420) * Theme.u;
+                    width: t.w * Theme.u;
+                    height: t.h * Theme.u;
+                    tile: t;
+                    focused: hero-focus == i;
+                    clicked => { root.clicked(i); }
+                    hovered => { root.hovered(i); }
+                }
+            }
+        }
+        for t[i] in hero: ArtTile {
+            visible: t.y != 440;
+            x: t.x * Theme.u;
+            y: t.y * Theme.u;
+            width: t.w * Theme.u;
+            height: t.h * Theme.u;
+            tile: t;
+            focused: hero-focus == i;
+            clicked => { root.clicked(i); }
+            hovered => { root.hovered(i); }
+        }
+        // The next two sections' titles peek in at the bottom, inviting you to scroll.
+        for title[i] in sections: Text {
+            visible: i < 2;
+            x: 104 * Theme.u;
+            y: (938 + i * 62) * Theme.u;
+            text: title;
+            font-family: Theme.ui-font;
+            font-size: 33px * Theme.scale;
+            font-weight: 700;
+            color: Theme.text-faint;
+        }
+    }
+
+    if mode == 1: Rectangle {
+        y: (1 - root.section-t) * root.section-dir * 90px * Theme.scale;
+        opacity: 0.3 + 0.7 * root.section-t;
+        Text {
+            x: 104 * Theme.u;
+            y: 36 * Theme.u;
+            text: section == 0 ? "Home" : sections[section - 1];
+            font-family: Theme.ui-font;
+            font-size: 33px * Theme.scale;
+            font-weight: 700;
+            color: Theme.text-faint;
+        }
+        Text {
+            x: 104 * Theme.u;
+            y: 112 * Theme.u;
+            text: sections[section];
+            font-family: Theme.ui-font;
+            font-size: 52px * Theme.scale;
+            font-weight: 700;
+            color: Theme.text;
+        }
+        Rectangle {
+            x: -root.section-scroll * Theme.u;
+            animate x { duration: Theme.anim; easing: ease-out; }
+            for t[i] in section-tiles: ArtTile {
+                x: t.x * Theme.u;
+                y: t.y * Theme.u;
+                width: t.w * Theme.u;
+                height: t.h * Theme.u;
+                tile: t;
+                focused: section-focus == i;
+                clicked => { root.clicked(i); }
+                hovered => { root.hovered(i); }
+            }
+        }
+        for title[i] in sections: Text {
+            visible: i > section && i <= section + 2;
+            x: 104 * Theme.u;
+            y: (740 + (i - section - 1) * 66) * Theme.u;
+            text: title;
+            font-family: Theme.ui-font;
+            font-size: 33px * Theme.scale;
+            font-weight: 700;
+            color: Theme.text-faint;
+        }
+    }
+}

@@ -1,0 +1,163 @@
+import { Theme, Icons } from "theme.slint";
+import { Tile, ArtTile, ProfileItem, Avatar, Icon, FocusRing } from "components.slint";
+
+export struct SidebarItem {
+    label: string,
+    count: string,
+    // Design-pixel y of the row (dividers add space, so Rust lays this out).
+    y: float,
+    divider-above: bool,
+}
+
+// "My games & apps": category sidebar on the left; moving into the grid slides the sidebar away and the
+// grid takes the full width, as on the Xbox.
+export component LibraryScreen inherits Rectangle {
+    in property <ProfileItem> profile;
+    in property <[SidebarItem]> categories;
+    in property <int> category;
+    in property <bool> sidebar-focused;
+    in property <string> title;
+    in property <string> sort-label;
+    // -1 = none, 0 = Sort, 1 = Add a game
+    in property <int> control-focus;
+    in property <[Tile]> games;
+    in property <int> game-focus;
+    in property <float> scroll;
+    in property <string> empty-text;
+    callback category-clicked(int);
+    callback control-clicked(int);
+    callback game-clicked(int);
+    callback game-hovered(int);
+
+    background: Theme.page;
+    property <float> content-x: sidebar-focused ? 549 : 146;
+
+    // Content (scrolls with the grid).
+    Rectangle {
+        y: -root.scroll * Theme.u;
+        animate y { duration: Theme.anim; easing: ease-out; }
+
+        Text {
+            x: content-x * Theme.u;
+            y: 176 * Theme.u;
+            text: title;
+            font-family: Theme.ui-font;
+            font-size: 45px * Theme.scale;
+            color: Theme.text;
+        }
+        // Sort
+        Rectangle {
+            x: content-x * Theme.u;
+            y: 300 * Theme.u;
+            width: 400 * Theme.u;
+            height: 64 * Theme.u;
+            FocusRing { target-width: parent.width; target-height: parent.height; focused: control-focus == 0; }
+            Rectangle { background: Theme.tile; border-radius: Theme.radius; }
+            Text {
+                x: 22 * Theme.u;
+                text: sort-label;
+                font-family: Theme.ui-font;
+                font-size: 25px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            Icon { x: parent.width - 56 * Theme.u; width: 40 * Theme.u; glyph: Icons.chevron-down; size: 18px * Theme.scale; }
+            TouchArea { clicked => { root.control-clicked(0); } }
+        }
+        // Add a game
+        Rectangle {
+            x: (content-x + 416) * Theme.u;
+            y: 300 * Theme.u;
+            width: 300 * Theme.u;
+            height: 64 * Theme.u;
+            FocusRing { target-width: parent.width; target-height: parent.height; focused: control-focus == 1; }
+            Rectangle { background: Theme.tile; border-radius: Theme.radius; }
+            Icon { x: 22 * Theme.u; width: 28 * Theme.u; glyph: Icons.add; size: 20px * Theme.scale; }
+            Text {
+                x: 66 * Theme.u;
+                text: "Add a game";
+                font-family: Theme.ui-font;
+                font-size: 25px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            TouchArea { clicked => { root.control-clicked(1); } }
+        }
+        if games.length == 0: Text {
+            x: content-x * Theme.u;
+            y: 420 * Theme.u;
+            text: empty-text;
+            font-family: Theme.ui-font;
+            font-size: 25px * Theme.scale;
+            color: Theme.text-dim;
+        }
+        for t[i] in games: ArtTile {
+            x: t.x * Theme.u;
+            y: t.y * Theme.u;
+            width: t.w * Theme.u;
+            height: t.h * Theme.u;
+            tile: t;
+            focused: game-focus == i;
+            clicked => { root.game-clicked(i); }
+            hovered => { root.game-hovered(i); }
+        }
+    }
+
+    // Sidebar
+    Rectangle {
+        x: sidebar-focused ? 0 : -480 * Theme.u;
+        width: 480 * Theme.u;
+        background: Theme.sidebar;
+        animate x { duration: 220ms; easing: ease-out; }
+        Rectangle { x: parent.width - 1px; width: 1px; background: Theme.divider; }
+
+        Icon { x: 102 * Theme.u; y: 82 * Theme.u; width: 40 * Theme.u; height: 40 * Theme.u; glyph: Icons.library; size: 26px * Theme.scale; }
+        Avatar { x: 152 * Theme.u; y: 84 * Theme.u; profile: root.profile; size: 36 * Theme.u; }
+        Text {
+            x: 198 * Theme.u;
+            y: 84 * Theme.u;
+            height: 36 * Theme.u;
+            text: profile.name;
+            font-family: Theme.ui-font;
+            font-size: 24px * Theme.scale;
+            color: Theme.text-dim;
+            vertical-alignment: center;
+        }
+
+        for c[i] in categories: Rectangle {
+            y: c.y * Theme.u;
+            height: 66 * Theme.u;
+            if c.divider-above: Rectangle {
+                x: 108 * Theme.u;
+                y: -20 * Theme.u;
+                width: 300 * Theme.u;
+                height: 1px;
+                background: Theme.divider;
+            }
+            Rectangle {
+                background: category == i ? Theme.accent : transparent;
+                drop-shadow-blur: category == i && root.sidebar-focused ? 14px * Theme.scale : 0;
+                drop-shadow-color: category == i && root.sidebar-focused ? Theme.accent.with-alpha(0.7) : transparent;
+            }
+            Text {
+                x: 108 * Theme.u;
+                text: c.label;
+                font-family: Theme.ui-font;
+                font-size: 25px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            Text {
+                x: 340 * Theme.u;
+                width: 72 * Theme.u;
+                text: c.count;
+                font-family: Theme.ui-font;
+                font-size: 24px * Theme.scale;
+                color: Theme.text;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            TouchArea { clicked => { root.category-clicked(i); } }
+        }
+    }
+}

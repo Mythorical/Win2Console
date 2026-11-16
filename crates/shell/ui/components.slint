@@ -1,0 +1,415 @@
+import { Theme, Icons } from "theme.slint";
+
+// A positioned tile. Geometry is in design pixels and computed in Rust, so spatial navigation always
+// matches what is drawn.
+export struct Tile {
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    title: string,
+    subtitle: string,
+    glyph: string,
+    image: image,
+    has-image: bool,
+    // 0 = game art, 1 = solid accent shortcut, 2 = dark tile (My games & apps), 3 = neutral option
+    style: int,
+    // Caption strip at the bottom: always (true) or only when focused (false).
+    caption: bool,
+    // Image only fills the right part (the "My games & apps" tile shows a strip of recent art).
+    strip: bool,
+    pinned: bool,
+    // Corner badge glyph, e.g. a download arrow for games that aren't installed ("" = none).
+    badge: string,
+}
+
+export struct ProfileItem {
+    name: string,
+    accent: color,
+    avatar-index: int,
+    custom-avatar: image,
+    has-custom-avatar: bool,
+}
+
+export struct Hint {
+    button: string,
+    label: string,
+}
+
+export component Icon inherits Text {
+    in property <string> glyph;
+    in property <length> size: 24px * Theme.scale;
+    text: glyph;
+    font-family: Theme.icon-font;
+    font-size: size;
+    color: Theme.text;
+    vertical-alignment: center;
+    horizontal-alignment: center;
+}
+
+// Round profile picture: built-in glyph on the profile's accent colour, or a custom image.
+export component Avatar inherits Rectangle {
+    in property <ProfileItem> profile;
+    in property <length> size: 60px * Theme.scale;
+    width: size;
+    height: size;
+    border-radius: size / 2;
+    background: profile.accent;
+    clip: true;
+    if !profile.has-custom-avatar: Icon {
+        glyph: Icons.avatars[Math.mod(profile.avatar-index, Icons.avatars.length)];
+        size: root.size * 0.5;
+    }
+    if profile.has-custom-avatar: Image {
+        width: 100%;
+        height: 100%;
+        source: profile.custom-avatar;
+        image-fit: cover;
+    }
+}
+
+// Xbox focus: lighter-accent border with an accent glow. Declare it *before* the element's content:
+// it sits behind, just outside the element's bounds, so it never covers the content.
+// Renderer quirks (femtovg, seen in the VM): a drop shadow with zero blur but a visible colour, or a
+// fully transparent rounded rectangle, can stop later text from drawing. So conditional shadows also
+// switch their colour to transparent, and conditional rounded backgrounds use `visible` instead.
+export component FocusRing inherits Rectangle {
+    in property <bool> focused;
+    in property <length> target-width;
+    in property <length> target-height;
+    in property <length> radius: Theme.radius;
+    property <length> gap: 3px * Theme.scale;
+    x: -gap;
+    y: -gap;
+    width: target-width + 2 * gap;
+    height: target-height + 2 * gap;
+    border-radius: radius + gap;
+    border-width: focused ? 3px * Theme.scale : 0;
+    border-color: Theme.focus;
+    drop-shadow-blur: focused ? 16px * Theme.scale : 0;
+    drop-shadow-color: focused ? Theme.accent.with-alpha(0.85) : transparent;
+    animate border-width, drop-shadow-blur { duration: Theme.anim; easing: ease-out; }
+}
+
+// Any dashboard tile: game art, accent shortcut, or the dark "My games & apps" tile.
+export component ArtTile inherits Rectangle {
+    in property <Tile> tile;
+    in property <bool> focused;
+    callback clicked();
+    callback hovered();
+
+    property <bool> show-caption: tile.title != "" && (tile.caption || focused);
+
+    FocusRing { target-width: parent.width; target-height: parent.height; focused: root.focused; }
+
+    Rectangle {
+        border-radius: Theme.radius;
+        clip: true;
+        background: tile.style == 1 ? Theme.accent-tile
+            : tile.style == 2 ? Theme.tile-dark
+            : tile.style == 3 ? Theme.tile
+            : Theme.placeholder;
+
+        if tile.has-image && !tile.strip: Image {
+            width: 100%;
+            height: 100%;
+            source: tile.image;
+            image-fit: cover;
+        }
+        if tile.has-image && tile.strip: Image {
+            x: parent.width * 0.74;
+            width: parent.width * 0.26;
+            height: 100%;
+            source: tile.image;
+            image-fit: cover;
+        }
+        // Icon (shortcut tiles, or placeholder art).
+        if !tile.has-image || tile.strip: Icon {
+            x: tile.strip ? 0 : 0;
+            width: tile.strip ? parent.width * 0.74 : parent.width;
+            height: tile.caption ? parent.height - 56px * Theme.scale : parent.height;
+            glyph: tile.glyph != "" ? tile.glyph : Icons.game;
+            size: min(parent.width, parent.height) * (tile.style == 0 ? 0.22 : 0.3);
+            color: tile.style == 0 ? Theme.text-faint : Theme.text;
+        }
+        // Art-less game tiles show the name in the middle, like the Xbox's loading tiles.
+        if !tile.has-image && tile.style == 0 && !show-caption: Text {
+            x: 12px * Theme.scale;
+            y: parent.height * 0.62;
+            width: parent.width - 24px * Theme.scale;
+            height: parent.height * 0.36;
+            text: tile.title;
+            font-family: Theme.ui-font;
+            font-size: 22px * Theme.scale;
+            color: Theme.text;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+            vertical-alignment: top;
+            overflow: elide;
+        }
+    }
+
+    // Caption and pin badge sit above the clipped body so they're never cut by its rounded corners.
+    if show-caption: Rectangle {
+        y: parent.height - self.height;
+        height: (tile.subtitle != "" ? 84px : 56px) * Theme.scale;
+        width: tile.strip ? parent.width * 0.74 : parent.width;
+        background: tile.style == 0 && tile.has-image
+            ? @linear-gradient(180deg, #00000000 0%, #000000C8 55%)
+            : transparent;
+        VerticalLayout {
+            padding-left: 16px * Theme.scale;
+            padding-right: 16px * Theme.scale;
+            padding-bottom: 12px * Theme.scale;
+            alignment: end;
+            Text {
+                text: tile.title;
+                font-family: Theme.ui-font;
+                font-size: 25px * Theme.scale;
+                color: Theme.text;
+                overflow: elide;
+            }
+            if tile.subtitle != "": Text {
+                text: tile.subtitle;
+                font-family: Theme.ui-font;
+                font-size: 22px * Theme.scale;
+                color: Theme.text-dim;
+                overflow: elide;
+            }
+        }
+    }
+    if tile.badge != "": Rectangle {
+        x: parent.width - self.width - 8px * Theme.scale;
+        y: parent.height - self.height - 8px * Theme.scale;
+        width: 34px * Theme.scale;
+        height: self.width;
+        border-radius: Theme.radius;
+        background: #000000B0;
+        Icon { glyph: tile.badge; size: 18px * Theme.scale; }
+    }
+    if tile.pinned: Rectangle {
+        x: parent.width - self.width - 8px * Theme.scale;
+        y: 8px * Theme.scale;
+        width: 30px * Theme.scale;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: #000000A0;
+        Icon { glyph: Icons.pin; size: 15px * Theme.scale; }
+    }
+    TouchArea {
+        clicked => { root.clicked(); }
+        changed has-hover => { if self.has-hover { root.hovered(); } }
+    }
+}
+
+// Xbox button glyph: outlined circle with a coloured letter (Y yellow, A green, ...), or a word.
+export component ButtonGlyph inherits Rectangle {
+    in property <string> button;
+    property <color> tint: button == "A" ? #5DC21E : button == "B" ? #F25C54 : button == "X" ? #3C9DF2 : button == "Y" ? #F2C80F : Theme.text;
+    width: max(30px * Theme.scale, label.preferred-width + 14px * Theme.scale);
+    height: 30px * Theme.scale;
+    border-radius: self.height / 2;
+    border-width: 2px * Theme.scale;
+    border-color: tint;
+    label := Text {
+        text: button == "≡" ? Icons.menu : button == "View" ? Icons.view : button;
+        font-family: button == "≡" || button == "View" ? Theme.icon-font : Theme.ui-font;
+        font-size: (button == "≡" || button == "View" ? 13px : 16px) * Theme.scale;
+        font-weight: 600;
+        color: tint;
+    }
+}
+
+// Bottom-right hint pill ("(≡) More options  (Y) Search").
+export component HintPill inherits Rectangle {
+    in property <[Hint]> hints;
+    visible: hints.length > 0;
+    height: 60px * Theme.scale;
+    width: row.preferred-width + 32px * Theme.scale;
+    border-radius: Theme.radius;
+    background: Theme.hint-pill;
+    row := HorizontalLayout {
+        x: 16px * Theme.scale;
+        width: self.preferred-width;
+        spacing: 22px * Theme.scale;
+        alignment: center;
+        for h in hints: HorizontalLayout {
+            spacing: 10px * Theme.scale;
+            alignment: center;
+            ButtonGlyph { button: h.button; y: (parent.height - self.height) / 2; }
+            Text {
+                text: h.label;
+                font-family: Theme.ui-font;
+                font-size: 25px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// Generated wallpaper in the accent colour: dark base with flowing bands and light strokes, after the
+// Xbox's default dynamic backgrounds.
+// Default dashboard background: layered swooshes in the profile's accent colour with thin highlight
+// curves, drawn on a 16:9 canvas that covers the window.
+export component Wallpaper inherits Rectangle {
+    background: Theme.accent.mix(#000000, 0.24);
+    Rectangle {
+        width: max(root.width, root.height * 16 / 9);
+        height: self.width * 9 / 16;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            fill: Theme.accent.mix(#000000, 0.40);
+            commands: "M 620 0 C 880 280 1260 180 1480 440 C 1680 680 1620 920 1920 1060 L 1920 0 Z";
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            fill: Theme.accent.mix(#000000, 0.52);
+            commands: "M 760 0 C 980 260 1320 160 1520 420 C 1700 660 1640 900 1920 1010 L 1920 0 Z";
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            fill: Theme.accent.mix(#000000, 0.66).with-alpha(0.92);
+            commands: "M 960 0 C 1140 230 1440 170 1610 430 C 1760 650 1740 840 1920 930 L 1920 0 Z";
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            fill: Theme.accent.mix(#000000, 0.80).with-alpha(0.85);
+            commands: "M 1180 0 C 1320 200 1560 180 1700 420 C 1810 600 1830 760 1920 820 L 1920 0 Z";
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            fill: Theme.accent.mix(#FFFFFF, 0.85).with-alpha(0.55);
+            commands: "M 1400 0 C 1500 170 1690 190 1790 380 C 1860 520 1880 640 1920 690 L 1920 0 Z";
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            fill: Theme.accent.mix(#000000, 0.36);
+            commands: "M 0 600 C 360 660 680 830 940 1080 L 0 1080 Z";
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            fill: Theme.accent.mix(#000000, 0.50).with-alpha(0.9);
+            commands: "M 0 730 C 300 770 560 900 760 1080 L 0 1080 Z";
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            stroke: #FFFFFF38;
+            stroke-width: 1.5px;
+            fill: transparent;
+            commands: "M 700 -20 C 960 260 1310 170 1520 430 C 1700 660 1650 900 1960 1040";
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            stroke: #FFFFFF22;
+            stroke-width: 1px;
+            fill: transparent;
+            commands: "M -40 560 C 380 620 720 820 1000 1100";
+        }
+        Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 1920;
+            viewbox-height: 1080;
+            stroke: Theme.accent.mix(#FFFFFF, 0.6).with-alpha(0.35);
+            stroke-width: 1px;
+            fill: transparent;
+            commands: "M 1060 -20 C 1230 220 1480 170 1650 430 C 1780 630 1790 800 1960 880";
+        }
+    }
+}
+
+// Trophy (the icon font has none): cup, handles, stem and base, drawn as an outline.
+export component TrophyIcon inherits Rectangle {
+    in property <length> size: 30px * Theme.scale;
+    in property <color> tint: Theme.text;
+    Path {
+        width: root.size;
+        height: root.size;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        stroke: root.tint;
+        stroke-width: root.size / 16;
+        fill: transparent;
+        commands: "M 7 3 L 17 3 L 17 9 A 5 5 0 0 1 7 9 Z M 7 5 L 3.5 5 L 3.5 7 A 3.5 3.5 0 0 0 7 10.5 M 17 5 L 20.5 5 L 20.5 7 A 3.5 3.5 0 0 1 17 10.5 M 12 14 L 12 18 M 8 21 L 16 21 L 15 18 L 9 18 Z";
+    }
+}
+
+// Headphones, slashed when deafened (the icon font has no "headphones off"). Shared by the top bars and
+// the Guide's Party tab so they look identical.
+export component HeadphonesIcon inherits Rectangle {
+    in property <bool> deafened;
+    in property <length> size: 30px * Theme.scale;
+    // Moves the drawing down (to line up with neighbouring glyphs).
+    in property <length> drop: 0;
+    width: root.size;
+    height: root.size;
+    Text {
+        y: (parent.height - self.height) / 2 + root.drop;
+        text: "\u{E7F6}";
+        font-family: Theme.icon-font;
+        font-size: root.size * 0.8;
+        color: Theme.text;
+    }
+    if root.deafened: Path {
+        y: root.drop;
+        width: root.size;
+        height: root.size;
+        viewbox-width: 10;
+        viewbox-height: 10;
+        stroke: Theme.text;
+        stroke-width: root.size / 14;
+        commands: "M 1.5 1.5 L 8.5 8.5";
+    }
+}
+
+// Party chat status: microphone (slashed when muted) and headphones (slashed when deafened).
+export component ChatStatus inherits HorizontalLayout {
+    in property <bool> mic-muted;
+    in property <bool> deafened;
+    in property <length> size: 30px * Theme.scale;
+    // Nudges the glyphs down so their ink lines up with the neighbouring icon (set per use).
+    in property <length> drop: 0;
+    spacing: root.size * 0.25;
+    Rectangle {
+        width: root.size;
+        height: root.size;
+        Text {
+            y: (parent.height - self.height) / 2 + root.drop;
+            text: root.mic-muted ? "\u{F781}" : "\u{E720}";
+            font-family: Theme.icon-font;
+            font-size: root.size * 0.8;
+            color: Theme.text;
+        }
+    }
+    HeadphonesIcon { deafened: root.deafened; size: root.size; drop: root.drop; }
+}

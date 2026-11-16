@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/shell", "crates/core", "crates/input", "crates/library", "crates/platform"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+cs-core = { path = "crates/core" }
+cs-input = { path = "crates/input" }
+cs-library = { path = "crates/library" }
+cs-platform = { path = "crates/platform" }
+
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "raw-window-handle-06", "unstable-winit-030"] }
+slint-build = "1.18"
+sdl3 = { version = "0.22", features = ["build-from-source-static"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.43", features = ["bundled"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+directories = "6"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "ico", "bmp"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tracing-appender = "0.2"
+windows = "0.62"
+wry = "0.57"
+ureq = { version = "3", features = ["json"] }
+sha2 = "0.11"
+base64 = "0.23"
+getrandom = "0.4"
+cc = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Dependencies (image decoding, rendering) optimised even in debug builds; our own crates stay debuggable.
+[profile.dev.package."*"]
+opt-level = 2

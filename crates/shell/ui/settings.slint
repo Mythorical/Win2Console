@@ -1,0 +1,162 @@
+import { Theme, Icons } from "theme.slint";
+import { ProfileItem, Avatar, Icon, FocusRing } from "components.slint";
+
+export struct SettingTile {
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    glyph: string,
+    label: string,
+    value: string,
+    // -1 = no checkbox, 0 = off, 1 = on
+    toggle: int,
+    // Accent corner marker (Xbox marks the current choice this way).
+    corner: bool,
+    chevron: bool,
+}
+
+export component OptionTile inherits Rectangle {
+    in property <SettingTile> tile;
+    in property <bool> focused;
+    callback clicked();
+    callback hovered();
+
+    FocusRing { target-width: parent.width; target-height: parent.height; focused: root.focused; }
+    Rectangle {
+        background: root.focused ? #383838 : Theme.tile;
+        border-radius: Theme.radius;
+        clip: true;
+        if tile.corner: Path {
+            x: parent.width - 32 * Theme.u;
+            y: 0;
+            width: 32 * Theme.u;
+            height: 32 * Theme.u;
+            viewbox-width: 32;
+            viewbox-height: 32;
+            fill: Theme.accent;
+            commands: "M 0 0 L 32 0 L 32 32 Z";
+        }
+    }
+    property <length> text-x: (tile.glyph != "" ? 96 : 26) * Theme.u;
+    if tile.glyph != "": Icon {
+        x: 26 * Theme.u;
+        width: 48 * Theme.u;
+        glyph: tile.glyph;
+        size: 32px * Theme.scale;
+    }
+    VerticalLayout {
+        x: text-x;
+        width: parent.width - text-x - 80 * Theme.u;
+        alignment: center;
+        spacing: 2 * Theme.u;
+        Text {
+            text: tile.label;
+            font-family: Theme.ui-font;
+            font-size: 26px * Theme.scale;
+            color: Theme.text;
+            overflow: elide;
+        }
+        if tile.value != "": Text {
+            text: tile.value;
+            font-family: Theme.ui-font;
+            font-size: 23px * Theme.scale;
+            color: Theme.text-dim;
+            overflow: elide;
+        }
+    }
+    if tile.chevron: Icon {
+        x: parent.width - 60 * Theme.u;
+        width: 40 * Theme.u;
+        glyph: Icons.chevron-down;
+        size: 20px * Theme.scale;
+    }
+    if tile.toggle >= 0: Rectangle {
+        x: parent.width - 58 * Theme.u;
+        y: (parent.height - self.height) / 2;
+        width: 30 * Theme.u;
+        height: 30 * Theme.u;
+        border-width: 2px * Theme.scale;
+        border-color: Theme.text;
+        background: tile.toggle == 1 ? Theme.accent : transparent;
+        if tile.toggle == 1: Icon { glyph: Icons.check; size: 18px * Theme.scale; }
+    }
+    TouchArea {
+        clicked => { root.clicked(); }
+        changed has-hover => { if self.has-hover { root.hovered(); } }
+    }
+}
+
+// Settings: category sidebar + a page of option tiles, as on the Xbox.
+export component SettingsScreen inherits Rectangle {
+    in property <ProfileItem> profile;
+    in property <string> header-glyph: Icons.settings;
+    in property <[string]> categories;
+    in property <int> category;
+    in property <bool> in-content;
+    in property <string> title;
+    in property <[SettingTile]> tiles;
+    in property <int> tile-focus;
+    callback category-clicked(int);
+    callback tile-clicked(int);
+    callback tile-hovered(int);
+
+    background: Theme.page;
+
+    Rectangle {
+        width: 480 * Theme.u;
+        x: 0;
+        background: Theme.sidebar;
+        Rectangle { x: parent.width - 1px; width: 1px; background: Theme.divider; }
+        Icon { x: 102 * Theme.u; y: 82 * Theme.u; width: 40 * Theme.u; height: 40 * Theme.u; glyph: root.header-glyph; size: 26px * Theme.scale; }
+        Avatar { x: 152 * Theme.u; y: 84 * Theme.u; profile: root.profile; size: 36 * Theme.u; }
+        Text {
+            x: 198 * Theme.u;
+            y: 84 * Theme.u;
+            height: 36 * Theme.u;
+            text: profile.name;
+            font-family: Theme.ui-font;
+            font-size: 24px * Theme.scale;
+            color: Theme.text-dim;
+            vertical-alignment: center;
+        }
+        for c[i] in categories: Rectangle {
+            y: (202 + i * 68) * Theme.u;
+            height: 64 * Theme.u;
+            Rectangle {
+                background: category == i ? Theme.accent : transparent;
+                drop-shadow-blur: category == i && !in-content ? 16px * Theme.scale : 0;
+                drop-shadow-color: category == i && !in-content ? Theme.accent.with-alpha(0.8) : transparent;
+            }
+            Text {
+                x: 108 * Theme.u;
+                text: c;
+                font-family: Theme.ui-font;
+                font-size: 25px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            TouchArea { clicked => { root.category-clicked(i); } }
+        }
+    }
+
+    Text {
+        x: 550 * Theme.u;
+        y: 62 * Theme.u;
+        text: title;
+        font-family: Theme.ui-font;
+        font-size: 45px * Theme.scale;
+        font-weight: 600;
+        color: Theme.text;
+    }
+    for t[i] in tiles: OptionTile {
+        x: t.x * Theme.u;
+        y: t.y * Theme.u;
+        width: t.w * Theme.u;
+        height: t.h * Theme.u;
+        tile: t;
+        focused: in-content && tile-focus == i;
+        clicked => { root.tile-clicked(i); }
+        hovered => { root.tile-hovered(i); }
+    }
+}

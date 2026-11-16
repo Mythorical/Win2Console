@@ -1,0 +1,193 @@
+import { Theme } from "theme.slint";
+import { Icon, FocusRing } from "components.slint";
+
+export struct GameButton {
+    glyph: string,
+    label: string,
+}
+
+export struct AchievementRow {
+    name: string,
+    description: string,
+    icon: image,
+    has-icon: bool,
+    unlocked: bool,
+    // "50 G", or the unlock date.
+    detail: string,
+}
+
+// Game hub: art behind, cover + title + actions on the left, achievements on the right.
+export component GamePage inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> stats;
+    in property <image> cover-image;
+    in property <bool> has-cover;
+    in property <image> art;
+    in property <[GameButton]> buttons;
+    in property <[AchievementRow]> achievements;
+    in property <string> empty-text;
+    // Buttons first, then achievements.
+    in property <int> selected;
+    callback clicked(int);
+    callback hovered(int);
+
+    background: #000000;
+    Image { width: 100%; height: 100%; source: root.art; image-fit: cover; opacity: 0.45; }
+    Rectangle { background: @linear-gradient(90deg, #000000E8 0%, #000000A0 45%, #00000060 100%); }
+
+    Rectangle {
+        x: 99 * Theme.u;
+        y: 130 * Theme.u;
+        width: 300 * Theme.u;
+        height: 400 * Theme.u;
+        border-radius: 4 * Theme.u;
+        background: Theme.accent-tile;
+        clip: true;
+        drop-shadow-blur: 24px * Theme.scale;
+        drop-shadow-color: #000000A0;
+        if root.has-cover: Image { width: 100%; height: 100%; source: root.cover-image; image-fit: cover; }
+        if !root.has-cover: Icon { glyph: "\u{E7FC}"; size: 64px * Theme.scale; }
+    }
+    Text {
+        x: 99 * Theme.u;
+        y: 560 * Theme.u;
+        width: 600 * Theme.u;
+        text: root.title;
+        font-family: Theme.ui-font;
+        font-size: 44px * Theme.scale;
+        font-weight: 600;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+    Text {
+        x: 99 * Theme.u;
+        y: 680 * Theme.u;
+        text: root.subtitle;
+        font-family: Theme.ui-font;
+        font-size: 24px * Theme.scale;
+        color: Theme.text-dim;
+    }
+    Text {
+        x: 99 * Theme.u;
+        y: 718 * Theme.u;
+        text: root.stats;
+        font-family: Theme.ui-font;
+        font-size: 24px * Theme.scale;
+        color: Theme.text;
+    }
+    for b[i] in root.buttons: Rectangle {
+        x: (99 + i * 196) * Theme.u;
+        y: 790 * Theme.u;
+        width: 180 * Theme.u;
+        height: 110 * Theme.u;
+        border-radius: 4 * Theme.u;
+        background: i == 0 ? Theme.accent : #FFFFFF26;
+        FocusRing { target-width: parent.width; target-height: parent.height; focused: root.selected == i; }
+        Icon { y: 18 * Theme.u; height: 40 * Theme.u; glyph: b.glyph; size: 28px * Theme.scale; }
+        Text {
+            y: 64 * Theme.u;
+            width: parent.width;
+            horizontal-alignment: center;
+            text: b.label;
+            font-family: Theme.ui-font;
+            font-size: 21px * Theme.scale;
+            color: Theme.text;
+        }
+        TouchArea {
+            clicked => { root.clicked(i); }
+            changed has-hover => { if self.has-hover { root.hovered(i); } }
+        }
+    }
+
+    // Achievements (scroll keeps the selected row visible).
+    property <length> row-h: 104 * Theme.u;
+    property <int> ach-sel: root.selected - root.buttons.length;
+    property <length> list-h: root.height - 240 * Theme.u;
+    property <int> rows-visible: max(1, Math.floor(list-h / row-h));
+    property <length> offset: max(0, min(ach-sel - rows-visible + 2, root.achievements.length - rows-visible)) * row-h;
+    Text {
+        x: 820 * Theme.u;
+        y: 100 * Theme.u;
+        text: "Achievements";
+        font-family: Theme.ui-font;
+        font-size: 30px * Theme.scale;
+        font-weight: 600;
+        color: Theme.text;
+    }
+    if root.achievements.length == 0: Text {
+        x: 820 * Theme.u;
+        y: 160 * Theme.u;
+        width: 900 * Theme.u;
+        text: root.empty-text;
+        font-family: Theme.ui-font;
+        font-size: 22px * Theme.scale;
+        color: Theme.text-dim;
+        wrap: word-wrap;
+    }
+    Rectangle {
+        x: 812 * Theme.u;
+        y: 150 * Theme.u;
+        width: root.width - 812 * Theme.u - 90 * Theme.u;
+        height: list-h;
+        clip: true;
+        for a[i] in root.achievements: Rectangle {
+            x: 8 * Theme.u;
+            y: i * row-h - offset + 8 * Theme.u;
+            animate y { duration: Theme.anim; easing: ease-out; }
+            width: parent.width - 16 * Theme.u;
+            height: row-h - 10 * Theme.u;
+            border-radius: 4 * Theme.u;
+            background: root.ach-sel == i ? #FFFFFF30 : #FFFFFF14;
+            FocusRing { target-width: parent.width; target-height: parent.height; focused: root.ach-sel == i; }
+            Rectangle {
+                x: 12 * Theme.u;
+                width: 70 * Theme.u;
+                height: 70 * Theme.u;
+                border-radius: 4 * Theme.u;
+                background: #FFFFFF20;
+                clip: true;
+                if a.has-icon: Image {
+                    width: 100%;
+                    height: 100%;
+                    source: a.icon;
+                    image-fit: cover;
+                    opacity: a.unlocked ? 1 : 0.35;
+                }
+                if !a.has-icon: Icon { glyph: a.unlocked ? "\u{E735}" : "\u{E72E}"; size: 28px * Theme.scale; }
+            }
+            Text {
+                x: 100 * Theme.u;
+                y: 16 * Theme.u;
+                width: parent.width - 300 * Theme.u;
+                text: a.name;
+                font-family: Theme.ui-font;
+                font-size: 24px * Theme.scale;
+                color: a.unlocked ? Theme.text : Theme.text-dim;
+                overflow: elide;
+            }
+            Text {
+                x: 100 * Theme.u;
+                y: 50 * Theme.u;
+                width: parent.width - 300 * Theme.u;
+                text: a.description;
+                font-family: Theme.ui-font;
+                font-size: 19px * Theme.scale;
+                color: Theme.text-dim;
+                overflow: elide;
+            }
+            Text {
+                x: parent.width - self.width - 20 * Theme.u;
+                y: (parent.height - self.height) / 2;
+                text: a.detail;
+                font-family: Theme.ui-font;
+                font-size: 22px * Theme.scale;
+                color: a.unlocked ? Theme.text : Theme.text-dim;
+            }
+            TouchArea {
+                clicked => { root.clicked(root.buttons.length + i); }
+                changed has-hover => { if self.has-hover { root.hovered(root.buttons.length + i); } }
+            }
+        }
+    }
+}

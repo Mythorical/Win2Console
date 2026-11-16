@@ -1,0 +1,1104 @@
+import { Theme, Icons } from "theme.slint";
+import { ProfileItem, Avatar, Icon, FocusRing, ButtonGlyph, TrophyIcon, ChatStatus, HeadphonesIcon } from "components.slint";
+
+export struct GuideItem {
+    // Design-pixel y within the panel (dividers add space, so Rust lays this out).
+    y: float,
+    glyph: string,
+    label: string,
+    subtitle: string,
+    image: image,
+    has-image: bool,
+    // Accent-coloured icon square (Settings), as on the Xbox.
+    solid: bool,
+    // Game rows show a square thumbnail instead of a plain icon.
+    thumb: bool,
+    divider-above: bool,
+    // People: round thumbnail with a presence dot (0 online, 1 away, 2 do not disturb, 3 offline, -1 none).
+    round: bool,
+    presence: int,
+    // "Switch profile": other profiles' pictures, and "+N" for the rest.
+    others: [ProfileItem],
+    more: string,
+    // Your picture instead of the icon (with `others` small and overlapping under the label).
+    profile-row: bool,
+}
+
+export struct ChatLine {
+    text: string,
+    mine: bool,
+    time: string,
+}
+
+export struct GuideTab {
+    glyph: string,
+    // Profile tab shows the avatar.
+    avatar: bool,
+}
+
+// The Guide: rounded flyout from the left with tabs on top, a list, and a row of icon buttons at the
+// bottom; a big clock sits outside the panel at the top right.
+export component GuidePanel inherits Rectangle {
+    in property <ProfileItem> profile;
+    in property <[GuideTab]> tabs;
+    in property <int> tab;
+    in property <[GuideItem]> items;
+    in property <[string]> buttons;
+    // Index into items, then buttons (items.length + n).
+    in property <int> selected;
+    in property <string> clock;
+    in property <string> status;
+    // Controller + battery glyphs (icon font), shown instead of `status` when a controller is connected.
+    in property <string> status-icons;
+    in property <bool> in-party;
+    in property <bool> mic-muted;
+    in property <bool> deafened;
+    // List scroll offset in design pixels (Rust keeps the focused row visible).
+    in property <float> scroll;
+    // Slide-in offset while opening.
+    in property <length> slide;
+    // Chat view (replaces the list).
+    in property <bool> chat-mode;
+    in property <string> chat-title;
+    in property <string> chat-subtitle;
+    in property <[ChatLine]> chat-lines;
+    in property <string> compose-text;
+    in property <bool> compose-focused;
+    callback clicked(int);
+    callback hovered(int);
+    callback tab-clicked(int);
+
+    background: #00000059;
+    TouchArea { }
+
+    // Controller icon and battery percentage, right-aligned above the clock.
+    HorizontalLayout {
+        x: parent.width - self.width - 112 * Theme.u;
+        y: 44 * Theme.u;
+        width: self.preferred-width;
+        height: 44 * Theme.u;
+        spacing: 10 * Theme.u;
+        if in-party: ChatStatus {
+            mic-muted: root.mic-muted;
+            deafened: root.deafened;
+            size: 32px * Theme.scale;
+            // The controller glyph's ink sits 2.5px (at 30px) below its centre; match it.
+            drop: 2.5px * Theme.scale;
+        }
+        if status-icons != "": Text {
+            text: status-icons;
+            font-family: Theme.icon-font;
+            font-size: 30px * Theme.scale;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        if status != "": Text {
+            text: status;
+            font-family: Theme.ui-font;
+            font-size: 26px * Theme.scale;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+    }
+    Text {
+        x: parent.width - self.width - 112 * Theme.u;
+        y: 96 * Theme.u;
+        text: clock;
+        font-family: Theme.ui-font;
+        font-size: 54px * Theme.scale;
+        font-weight: 700;
+        color: Theme.text;
+    }
+
+    panel := Rectangle {
+        x: 75 * Theme.u + root.slide;
+        y: 33 * Theme.u;
+        width: 540 * Theme.u;
+        height: min(1014 * Theme.u, root.height - 66 * Theme.u);
+        border-radius: 10 * Theme.u;
+        background: Theme.panel.with-alpha(0.97);
+        drop-shadow-blur: 30px * Theme.scale;
+        drop-shadow-color: #000000A0;
+
+        // Tabs
+        for t[i] in tabs: Rectangle {
+            x: (30 + i * 80) * Theme.u;
+            y: 28 * Theme.u;
+            width: 76 * Theme.u;
+            height: 76 * Theme.u;
+            if !t.avatar && t.glyph != "trophy": Icon { glyph: t.glyph; size: 30px * Theme.scale; }
+            if t.glyph == "trophy": TrophyIcon { size: 30px * Theme.scale; }
+            if t.avatar: Avatar { profile: root.profile; size: 48 * Theme.u; x: 14 * Theme.u; y: 14 * Theme.u; }
+            Rectangle {
+                visible: tab == i;
+                y: parent.height + 2 * Theme.u;
+                height: 5 * Theme.u;
+                border-radius: 2 * Theme.u;
+                background: Theme.accent;
+            }
+            TouchArea { clicked => { root.tab-clicked(i); } }
+        }
+
+        // Scrolling list area between the tabs and the bottom buttons (plain clip; no rounded corners).
+        list := Rectangle {
+            y: 128 * Theme.u;
+            height: panel.height - 128 * Theme.u - 130 * Theme.u;
+            clip: true;
+            visible: !root.chat-mode;
+        for it[i] in items: Rectangle {
+            x: 12 * Theme.u;
+            y: (it.y - 128 - root.scroll) * Theme.u;
+            animate y { duration: Theme.anim; easing: ease-out; }
+            width: 516 * Theme.u;
+            height: 96 * Theme.u;
+            if it.divider-above: Rectangle {
+                y: -16 * Theme.u;
+                height: 1px;
+                x: 18 * Theme.u;
+                width: parent.width - 36 * Theme.u;
+                background: Theme.divider;
+            }
+            FocusRing { target-width: parent.width; target-height: parent.height; focused: selected == i; }
+            // Focus background is shown/hidden rather than made transparent (see FocusRing's renderer note).
+            Rectangle { visible: selected == i; border-radius: Theme.radius; background: #3A3A3A; }
+            if it.thumb: Rectangle {
+                x: 6 * Theme.u;
+                y: 2 * Theme.u;
+                width: 92 * Theme.u;
+                height: 92 * Theme.u;
+                border-radius: it.round ? self.width / 2 : 0;
+                background: it.solid ? Theme.accent-tile : Theme.placeholder;
+                // Only clip real images: clipped placeholders sometimes lost their icon (femtovg).
+                clip: it.has-image;
+                if it.has-image: Image { width: 100%; height: 100%; source: it.image; image-fit: cover; }
+                if !it.has-image: Icon { glyph: it.glyph; size: 32px * Theme.scale; }
+            }
+            if it.presence >= 0: Rectangle {
+                x: 72 * Theme.u;
+                y: 66 * Theme.u;
+                width: 26 * Theme.u;
+                height: 26 * Theme.u;
+                border-radius: self.width / 2;
+                border-width: 4 * Theme.u;
+                border-color: Theme.panel;
+                background: it.presence == 0 ? #3BA55C : it.presence == 1 ? #FAA61A : it.presence == 2 ? #ED4245 : #747F8D;
+            }
+            if it.profile-row: Avatar { x: 16 * Theme.u; y: 12 * Theme.u; size: 72 * Theme.u; profile: root.profile; }
+            if !it.thumb && it.glyph == "deafened": HeadphonesIcon {
+                x: 34 * Theme.u + (44 * Theme.u - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                // Same proportions as the top bars: glyph = 0.8 × size, matching the 30px row icons.
+                size: 37.5px * Theme.scale;
+                deafened: true;
+            }
+            if !it.thumb && it.glyph != "trophy" && it.glyph != "deafened" && !it.profile-row: Icon { x: 34 * Theme.u; width: 44 * Theme.u; glyph: it.glyph; size: 30px * Theme.scale; }
+            if !it.thumb && it.glyph == "trophy": TrophyIcon { x: 41 * Theme.u; size: 30px * Theme.scale; }
+            // Other profiles: small pictures half covering each other, under the label.
+            for p[k] in it.others: Rectangle {
+                x: (112 + k * 19) * Theme.u;
+                y: 52 * Theme.u;
+                width: 38 * Theme.u;
+                height: 38 * Theme.u;
+                border-radius: self.width / 2;
+                background: Theme.panel;
+                Avatar { x: 2 * Theme.u; y: 2 * Theme.u; size: 34 * Theme.u; profile: p; }
+            }
+            if it.more != "": Text {
+                x: (112 + it.others.length * 19 + 26) * Theme.u;
+                y: 52 * Theme.u;
+                width: 60 * Theme.u;
+                height: 38 * Theme.u;
+                text: it.more;
+                font-family: Theme.ui-font;
+                font-size: 24px * Theme.scale;
+                color: Theme.text-dim;
+                vertical-alignment: center;
+            }
+            VerticalLayout {
+                // Text-only rows (no icon) start at the left edge.
+                x: (it.thumb ? 120 : it.glyph == "" && !it.profile-row ? 34 : 112) * Theme.u;
+                width: parent.width - self.x - 20 * Theme.u;
+                alignment: center;
+                Text {
+                    text: it.label;
+                    font-family: Theme.ui-font;
+                    font-size: 26px * Theme.scale;
+                    color: Theme.text;
+                    overflow: elide;
+                }
+                if it.subtitle != "": Text {
+                    text: it.subtitle;
+                    font-family: Theme.ui-font;
+                    font-size: 22px * Theme.scale;
+                    color: Theme.text-dim;
+                    overflow: elide;
+                }
+            }
+            TouchArea {
+                clicked => { root.clicked(i); }
+                changed has-hover => { if self.has-hover { root.hovered(i); } }
+            }
+        }
+        }
+
+        // Chat view
+        if root.chat-mode: Rectangle {
+            Text {
+                x: 32 * Theme.u;
+                y: 128 * Theme.u;
+                width: parent.width - 64 * Theme.u;
+                text: root.chat-title;
+                font-family: Theme.ui-font;
+                font-size: 32px * Theme.scale;
+                font-weight: 600;
+                color: Theme.text;
+                overflow: elide;
+            }
+            Text {
+                x: 32 * Theme.u;
+                y: 174 * Theme.u;
+                text: root.chat-subtitle;
+                font-family: Theme.ui-font;
+                font-size: 22px * Theme.scale;
+                color: Theme.text-dim;
+            }
+            Rectangle {
+                x: 0;
+                y: 220 * Theme.u;
+                width: parent.width;
+                height: panel.height - 450 * Theme.u;
+                clip: true;
+                VerticalLayout {
+                    padding-left: 24 * Theme.u;
+                    padding-right: 24 * Theme.u;
+                    spacing: 10 * Theme.u;
+                    alignment: end;
+                    for line in root.chat-lines: HorizontalLayout {
+                        alignment: line.mine ? end : start;
+                        Rectangle {
+                            max-width: 400 * Theme.u;
+                            border-radius: 14 * Theme.u;
+                            background: line.mine ? Theme.accent-tile : #3A3A3A;
+                            VerticalLayout {
+                                padding: 14 * Theme.u;
+                                padding-top: 10 * Theme.u;
+                                padding-bottom: 10 * Theme.u;
+                                spacing: 2 * Theme.u;
+                                Text {
+                                    text: line.text;
+                                    font-family: Theme.ui-font;
+                                    font-size: 24px * Theme.scale;
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: line.time;
+                                    font-family: Theme.ui-font;
+                                    font-size: 17px * Theme.scale;
+                                    color: Theme.text-faint;
+                                    horizontal-alignment: line.mine ? right : left;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Compose field
+            Rectangle {
+                x: 12 * Theme.u;
+                y: panel.height - 210 * Theme.u;
+                width: 516 * Theme.u;
+                height: 76 * Theme.u;
+                FocusRing { target-width: parent.width; target-height: parent.height; focused: root.compose-focused || root.selected == 0; }
+                Rectangle { border-radius: Theme.radius; background: #3A3A3A; }
+                Text {
+                    x: 20 * Theme.u;
+                    width: parent.width - 40 * Theme.u;
+                    text: root.compose-text == "" ? "Type a message" : root.compose-text;
+                    font-family: Theme.ui-font;
+                    font-size: 24px * Theme.scale;
+                    color: root.compose-text == "" ? Theme.text-dim : Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                TouchArea { clicked => { root.clicked(0); } }
+            }
+        }
+
+        // Bottom icon row
+        for b[i] in buttons: Rectangle {
+            x: (17 + i * 105) * Theme.u;
+            y: panel.height - 110 * Theme.u;
+            width: 90 * Theme.u;
+            height: 90 * Theme.u;
+            FocusRing { target-width: parent.width; target-height: parent.height; focused: selected == items.length + i; }
+            Rectangle { border-radius: Theme.radius; background: selected == items.length + i ? #4A4A4A : #333333; }
+            Icon { glyph: b; size: 32px * Theme.scale; }
+            TouchArea {
+                clicked => { root.clicked(items.length + i); }
+                changed has-hover => { if self.has-hover { root.hovered(items.length + i); } }
+            }
+        }
+    }
+}
+
+export struct MenuItem {
+    glyph: string,
+    label: string,
+}
+
+// Pop-up options menu ("More options", power, confirmations).
+export component MenuPanel inherits Rectangle {
+    in property <string> title;
+    in property <string> message;
+    in property <[MenuItem]> items;
+    in property <int> selected;
+    callback clicked(int);
+    callback hovered(int);
+
+    background: #00000099;
+    TouchArea { }
+
+    property <length> row-h: 80 * Theme.u;
+    property <length> head-h: (message != "" ? 150 : 96) * Theme.u;
+    // Long menus (e.g. inviting from a big friends list) are capped to the screen and scroll.
+    property <length> max-list-h: root.height - 120 * Theme.u - head-h - 24 * Theme.u;
+    property <int> visible-rows: max(1, Math.floor(max-list-h / row-h));
+    property <int> shown-rows: min(items.length, visible-rows);
+    property <length> offset: max(0, min(selected - visible-rows + 2, items.length - visible-rows)) * row-h;
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: 640 * Theme.u;
+        height: head-h + shown-rows * row-h + 24 * Theme.u;
+        border-radius: 8 * Theme.u;
+        background: Theme.panel;
+        drop-shadow-blur: 30px * Theme.scale;
+        drop-shadow-color: #000000B0;
+
+        VerticalLayout {
+            x: 32 * Theme.u;
+            y: 28 * Theme.u;
+            width: parent.width - 64 * Theme.u;
+            height: head-h - 36 * Theme.u;
+            spacing: 8 * Theme.u;
+            Text {
+                text: title;
+                font-family: Theme.ui-font;
+                font-size: 30px * Theme.scale;
+                font-weight: 600;
+                color: Theme.text;
+                overflow: elide;
+            }
+            if message != "": Text {
+                text: message;
+                font-family: Theme.ui-font;
+                font-size: 22px * Theme.scale;
+                color: Theme.text-dim;
+                wrap: word-wrap;
+            }
+        }
+        // Plain (unrounded) clip for the scrolling rows.
+        Rectangle {
+            y: head-h - 6 * Theme.u;
+            height: shown-rows * row-h + 6 * Theme.u;
+            clip: true;
+        for it[i] in items: Rectangle {
+            x: 16 * Theme.u;
+            y: i * row-h - root.offset + 6 * Theme.u;
+            animate y { duration: Theme.anim; easing: ease-out; }
+            width: parent.width - 32 * Theme.u;
+            height: row-h - 8 * Theme.u;
+            FocusRing { target-width: parent.width; target-height: parent.height; focused: selected == i; }
+            Rectangle { visible: selected == i; border-radius: Theme.radius; background: #3A3A3A; }
+            Icon { x: 16 * Theme.u; width: 44 * Theme.u; glyph: it.glyph; size: 26px * Theme.scale; }
+            Text {
+                x: 80 * Theme.u;
+                text: it.label;
+                font-family: Theme.ui-font;
+                font-size: 26px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            TouchArea {
+                clicked => { root.clicked(i); }
+                changed has-hover => { if self.has-hover { root.hovered(i); } }
+            }
+        }
+        }
+    }
+}
+
+export struct PickerItem {
+    glyph: string,
+    swatch: color,
+    image: image,
+    has-image: bool,
+    label: string,
+    // Current choice: accent corner marker.
+    current: bool,
+}
+
+// Grid of choices: colours, avatars, backgrounds.
+export component PickerPanel inherits Rectangle {
+    in property <string> title;
+    in property <[PickerItem]> items;
+    in property <int> selected;
+    in property <int> columns: 4;
+    in property <bool> round;
+    callback clicked(int);
+    callback hovered(int);
+
+    property <length> cell: 150 * Theme.u;
+    property <length> gap: 20 * Theme.u;
+    property <int> rows: Math.ceil(items.length / columns);
+
+    background: #00000099;
+    TouchArea { }
+
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: columns * cell + (columns - 1) * gap + 96 * Theme.u;
+        height: rows * (cell + gap) + 150 * Theme.u;
+        border-radius: 8 * Theme.u;
+        background: Theme.panel;
+        drop-shadow-blur: 30px * Theme.scale;
+        drop-shadow-color: #000000B0;
+
+        Text {
+            x: 48 * Theme.u;
+            y: 36 * Theme.u;
+            text: title;
+            font-family: Theme.ui-font;
+            font-size: 30px * Theme.scale;
+            font-weight: 600;
+            color: Theme.text;
+        }
+        for it[i] in items: Rectangle {
+            x: 48 * Theme.u + Math.mod(i, columns) * (cell + gap);
+            y: 110 * Theme.u + Math.floor(i / columns) * (cell + gap);
+            width: cell;
+            height: cell;
+            FocusRing {
+                target-width: parent.width;
+                target-height: parent.height;
+                focused: selected == i;
+                radius: round ? cell / 2 : Theme.radius;
+            }
+            Rectangle {
+                border-radius: round ? cell / 2 : Theme.radius;
+                background: it.swatch;
+                clip: true;
+                if it.has-image: Image { width: 100%; height: 100%; source: it.image; image-fit: cover; }
+                if !it.has-image && it.glyph != "": Icon {
+                    height: it.label != "" ? parent.height * 0.75 : parent.height;
+                    glyph: it.glyph;
+                    size: cell * 0.36;
+                }
+                if it.label != "": Text {
+                    y: parent.height - self.height - 10 * Theme.u;
+                    width: parent.width;
+                    text: it.label;
+                    font-family: Theme.ui-font;
+                    font-size: 19px * Theme.scale;
+                    color: Theme.text;
+                    horizontal-alignment: center;
+                }
+                if it.current && !round: Path {
+                    x: parent.width - 30 * Theme.u;
+                    y: 0;
+                    width: 30 * Theme.u;
+                    height: 30 * Theme.u;
+                    viewbox-width: 30;
+                    viewbox-height: 30;
+                    fill: #FFFFFF;
+                    commands: "M 0 0 L 30 0 L 30 30 Z";
+                }
+            }
+            TouchArea {
+                clicked => { root.clicked(i); }
+                changed has-hover => { if self.has-hover { root.hovered(i); } }
+            }
+        }
+    }
+}
+
+export struct KeyView {
+    // Key-unit geometry from Rust (a letter key is 1×1).
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    label: string,
+    hint: string,
+    active: bool,
+}
+
+// Docked keyboard, laid out like the Xbox keyboard.
+export component Keyboard inherits Rectangle {
+    in property <[KeyView]> keys;
+    in property <int> selected;
+    callback clicked(int);
+    callback hovered(int);
+
+    property <length> pitch-x: 74 * Theme.u;
+    property <length> pitch-y: 56 * Theme.u;
+    property <length> gap: 6 * Theme.u;
+    property <length> pad: 14 * Theme.u;
+    width: 13.4 * pitch-x - gap + 2 * pad;
+    height: 5 * pitch-y - gap + 2 * pad;
+    border-radius: 8 * Theme.u;
+    background: #151515F5;
+    drop-shadow-blur: 24px * Theme.scale;
+    drop-shadow-color: #000000A0;
+
+    for k[i] in keys: Rectangle {
+        x: pad + k.x * pitch-x;
+        y: pad + k.y * pitch-y;
+        width: k.w * pitch-x - gap;
+        height: k.h * pitch-y - gap;
+        FocusRing { target-width: parent.width; target-height: parent.height; focused: selected == i; }
+        Rectangle {
+            border-radius: Theme.radius;
+            background: selected == i ? #4A4A4A : k.active ? #5A5A5A : #2B2B2B;
+        }
+        Text {
+            height: k.h > 1 ? parent.height * 0.6 : parent.height;
+            width: k.hint != "" && k.h <= 1 && k.w > 1 && k.w <= 2 ? parent.width * 0.6 : parent.width;
+            // Backspace uses the icon font (Segoe UI has no ⌫ glyph).
+            text: k.label == "⌫" ? "\u{E750}" : k.label;
+            font-family: k.label == "⌫" ? Theme.icon-font : Theme.ui-font;
+            font-size: (k.w > 1 || k.h > 1 ? 24px : 28px) * Theme.scale;
+            color: Theme.text;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        if k.hint != "": ButtonGlyph {
+            button: k.hint;
+            // Space bar: hint right of the label; tall keys: below it; single keys: to the right.
+            x: k.w > 2 ? parent.width / 2 + 56 * Theme.u : k.h > 1 ? (parent.width - self.width) / 2 : parent.width * 0.62;
+            y: k.h > 1 ? parent.height * 0.62 : (parent.height - self.height) / 2;
+        }
+        TouchArea {
+            clicked => { root.clicked(i); }
+            changed has-hover => { if self.has-hover { root.hovered(i); } }
+        }
+    }
+}
+
+// Text field at the top of the screen (OSK entry and Search), light like the Xbox search box.
+export component InputField inherits Rectangle {
+    in property <string> before;
+    in property <string> after;
+    in property <string> placeholder;
+    in property <bool> focused: true;
+    height: 66 * Theme.u;
+    FocusRing { target-width: parent.width; target-height: parent.height; focused: root.focused; }
+    Rectangle { background: #F2F2F2; border-radius: Theme.radius; }
+    HorizontalLayout {
+        padding-left: 22 * Theme.u;
+        padding-right: 22 * Theme.u;
+        spacing: 0;
+        alignment: start;
+        if before == "" && after == "": Rectangle { width: 2 * Theme.u; background: #1F1F1F; height: 34 * Theme.u; y: 16 * Theme.u; }
+        if before == "" && after == "": Text {
+            text: " " + placeholder;
+            font-family: Theme.ui-font;
+            font-size: 26px * Theme.scale;
+            color: #707070;
+            vertical-alignment: center;
+        }
+        if before != "" || after != "": Text {
+            text: before;
+            font-family: Theme.ui-font;
+            font-size: 26px * Theme.scale;
+            color: #1F1F1F;
+            vertical-alignment: center;
+        }
+        if before != "" || after != "": Rectangle { width: 2 * Theme.u; background: #1F1F1F; height: 34 * Theme.u; y: 16 * Theme.u; }
+        if before != "" || after != "": Text {
+            text: after;
+            font-family: Theme.ui-font;
+            font-size: 26px * Theme.scale;
+            color: #1F1F1F;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Notification, like the Xbox's accent-coloured toasts.
+export component Toast inherits Rectangle {
+    in property <string> message;
+    visible: message != "";
+    height: 96 * Theme.u;
+    width: max(420 * Theme.u, label.preferred-width + 140 * Theme.u);
+    background: Theme.accent;
+    drop-shadow-blur: 20px * Theme.scale;
+    drop-shadow-color: #000000A0;
+    Icon { x: 28 * Theme.u; width: 48 * Theme.u; glyph: Icons.game; size: 34px * Theme.scale; }
+    label := Text {
+        x: 100 * Theme.u;
+        text: message;
+        font-family: Theme.ui-font;
+        font-size: 24px * Theme.scale;
+        color: Theme.text;
+        vertical-alignment: center;
+    }
+}
+
+export struct ListItem {
+    glyph: string,
+    label: string,
+    value: string,
+}
+
+// Full-page list (file browser).
+export component ListScreen inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <[ListItem]> items;
+    in property <int> selected;
+    callback clicked(int);
+    callback hovered(int);
+
+    background: Theme.page;
+    property <length> row-h: 72 * Theme.u;
+    property <length> top: 210 * Theme.u;
+    property <int> visible-rows: max(1, Math.floor((root.height - top - 90 * Theme.u) / row-h));
+    property <length> offset: max(0, min(selected - visible-rows + 2, items.length - visible-rows)) * row-h;
+
+    Text {
+        x: 146 * Theme.u;
+        y: 62 * Theme.u;
+        text: title;
+        font-family: Theme.ui-font;
+        font-size: 45px * Theme.scale;
+        font-weight: 600;
+        color: Theme.text;
+    }
+    Text {
+        x: 146 * Theme.u;
+        y: 134 * Theme.u;
+        text: subtitle;
+        font-family: Theme.ui-font;
+        font-size: 24px * Theme.scale;
+        color: Theme.text-dim;
+    }
+    Rectangle {
+        y: top;
+        height: root.height - top - 60 * Theme.u;
+        clip: true;
+        for it[i] in items: Rectangle {
+            x: 146 * Theme.u;
+            y: i * row-h - offset + 6 * Theme.u;
+            width: 1100 * Theme.u;
+            height: row-h - 8 * Theme.u;
+            animate y { duration: Theme.anim; easing: ease-out; }
+            FocusRing { target-width: parent.width; target-height: parent.height; focused: selected == i; }
+            Rectangle { border-radius: Theme.radius; background: selected == i ? #383838 : Theme.tile; }
+            Icon { x: 18 * Theme.u; width: 44 * Theme.u; glyph: it.glyph; size: 24px * Theme.scale; }
+            Text {
+                x: 80 * Theme.u;
+                width: parent.width - 120 * Theme.u;
+                text: it.label;
+                font-family: Theme.ui-font;
+                font-size: 25px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            TouchArea {
+                clicked => { root.clicked(i); }
+                changed has-hover => { if self.has-hover { root.hovered(i); } }
+            }
+        }
+    }
+}
+
+export struct AudioRow {
+    glyph: string,
+    label: string,
+    // 0..1
+    level: float,
+    muted: bool,
+    // Option rows (devices, on/off) show `value` instead of a slider.
+    value: string,
+    slider: bool,
+}
+
+// Audio mixer opened from the Guide: one slider per source (device, game, party chat).
+// Left/Right changes the level; A mutes.
+export component AudioPanel inherits Rectangle {
+    in property <[AudioRow]> rows;
+    in property <int> selected;
+    callback clicked(int);
+    callback hovered(int);
+
+    background: #00000099;
+    TouchArea { }
+
+    property <length> row-h: 112 * Theme.u;
+    property <length> head-h: 96 * Theme.u;
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: 720 * Theme.u;
+        height: head-h + rows.length * row-h + 24 * Theme.u;
+        border-radius: 8 * Theme.u;
+        background: Theme.panel;
+        drop-shadow-blur: 30px * Theme.scale;
+        drop-shadow-color: #000000B0;
+
+        Text {
+            x: 32 * Theme.u;
+            y: 32 * Theme.u;
+            text: "Audio";
+            font-family: Theme.ui-font;
+            font-size: 30px * Theme.scale;
+            font-weight: 600;
+            color: Theme.text;
+        }
+        for it[i] in rows: Rectangle {
+            x: 16 * Theme.u;
+            y: head-h + i * row-h;
+            width: parent.width - 32 * Theme.u;
+            height: row-h - 8 * Theme.u;
+            FocusRing { target-width: parent.width; target-height: parent.height; focused: selected == i; }
+            Rectangle { visible: selected == i; border-radius: Theme.radius; background: #3A3A3A; }
+            Icon {
+                x: 16 * Theme.u;
+                y: 14 * Theme.u;
+                width: 44 * Theme.u;
+                height: 44 * Theme.u;
+                glyph: it.muted && it.slider ? "\u{E74F}" : it.glyph;
+                size: 26px * Theme.scale;
+            }
+            Text {
+                x: 80 * Theme.u;
+                y: 14 * Theme.u;
+                height: 44 * Theme.u;
+                text: it.label;
+                font-family: Theme.ui-font;
+                font-size: 26px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            Text {
+                x: parent.width - self.width - 24 * Theme.u;
+                y: 14 * Theme.u;
+                height: 44 * Theme.u;
+                text: !it.slider ? it.value : it.muted ? "Muted" : Math.round(it.level * 100) + "";
+                font-family: Theme.ui-font;
+                font-size: 24px * Theme.scale;
+                color: Theme.text-dim;
+                vertical-alignment: center;
+            }
+            // Slider track and fill.
+            if it.slider: Rectangle {
+                x: 80 * Theme.u;
+                y: 70 * Theme.u;
+                width: parent.width - 104 * Theme.u;
+                height: 6 * Theme.u;
+                border-radius: 3 * Theme.u;
+                background: #FFFFFF33;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * it.level;
+                    height: parent.height;
+                    border-radius: 3 * Theme.u;
+                    background: it.muted ? #FFFFFF55 : Theme.accent;
+                    animate width { duration: 90ms; }
+                }
+                Rectangle {
+                    x: parent.width * it.level - 9 * Theme.u;
+                    y: -6 * Theme.u;
+                    width: 18 * Theme.u;
+                    height: 18 * Theme.u;
+                    border-radius: 9 * Theme.u;
+                    background: it.muted ? #9A9A9A : #FFFFFF;
+                    animate x { duration: 90ms; }
+                }
+            }
+            TouchArea {
+                clicked => { root.clicked(i); }
+                changed has-hover => { if self.has-hover { root.hovered(i); } }
+            }
+        }
+    }
+}
+
+// Power: a full-width band like the console's "What do you want to do?" screen. Items 0..n-1 are the
+// options (3 per row); index n is CLOSE.
+export component PowerPanel inherits Rectangle {
+    in property <[MenuItem]> items;
+    in property <int> selected;
+    callback clicked(int);
+    callback hovered(int);
+
+    background: #000000B0;
+    TouchArea { }
+
+    property <length> tile-w: 516 * Theme.u;
+    property <length> tile-h: 132 * Theme.u;
+    property <length> gap: 14 * Theme.u;
+    property <int> rows: Math.ceil(items.length / 3);
+    band := Rectangle {
+        y: (root.height - self.height) / 2;
+        height: (300 + rows * 146 + 180) * Theme.u;
+        background: #2B2B2B;
+        Text {
+            x: 126 * Theme.u;
+            y: 96 * Theme.u;
+            text: "What do you want to do?";
+            font-family: Theme.ui-font;
+            font-size: 62px * Theme.scale;
+            color: Theme.text;
+        }
+        for it[i] in root.items: Rectangle {
+            x: 126 * Theme.u + Math.mod(i, 3) * (tile-w + gap);
+            y: 236 * Theme.u + Math.floor(i / 3) * (tile-h + gap);
+            width: tile-w;
+            height: tile-h;
+            background: root.selected == i ? #474747 : #383838;
+            Rectangle {
+                visible: root.selected == i;
+                border-width: 3 * Theme.u;
+                border-color: #E6E6E6;
+                border-radius: 4 * Theme.u;
+                x: -4 * Theme.u;
+                y: -4 * Theme.u;
+                width: parent.width + 8 * Theme.u;
+                height: parent.height + 8 * Theme.u;
+            }
+            Icon { x: 46 * Theme.u; width: 48 * Theme.u; glyph: it.glyph; size: 34px * Theme.scale; }
+            Text {
+                x: 128 * Theme.u;
+                text: it.label;
+                font-family: Theme.ui-font;
+                font-size: 27px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            TouchArea {
+                clicked => { root.clicked(i); }
+                changed has-hover => { if self.has-hover { root.hovered(i); } }
+            }
+        }
+        // CLOSE
+        Rectangle {
+            x: 126 * Theme.u;
+            y: parent.height - 160 * Theme.u;
+            width: 302 * Theme.u;
+            height: 92 * Theme.u;
+            background: root.selected == root.items.length ? #474747 : #383838;
+            Rectangle {
+                visible: root.selected == root.items.length;
+                border-width: 3 * Theme.u;
+                border-color: #E6E6E6;
+                border-radius: 4 * Theme.u;
+                x: -4 * Theme.u;
+                y: -4 * Theme.u;
+                width: parent.width + 8 * Theme.u;
+                height: parent.height + 8 * Theme.u;
+            }
+            Text {
+                text: "CLOSE";
+                font-family: Theme.ui-font;
+                font-size: 25px * Theme.scale;
+                font-weight: 700;
+                color: Theme.text;
+            }
+            TouchArea {
+                clicked => { root.clicked(root.items.length); }
+                changed has-hover => { if self.has-hover { root.hovered(root.items.length); } }
+            }
+        }
+    }
+}
+
+// A friend's card, opened from the People list: sits to the right of the Guide with their picture,
+// status, the game they're playing, and actions in a vertical list.
+export component FriendPanel inherits Rectangle {
+    in property <string> name;
+    in property <string> status;
+    in property <string> playing;
+    in property <image> picture;
+    in property <bool> has-picture;
+    in property <int> presence;
+    in property <[MenuItem]> items;
+    in property <int> selected;
+    callback clicked(int);
+    callback hovered(int);
+
+    x: 631 * Theme.u;
+    y: 33 * Theme.u;
+    width: 460 * Theme.u;
+    height: (playing != "" ? 470 : 420) * Theme.u + items.length * 80 * Theme.u;
+    border-radius: 8 * Theme.u;
+    background: Theme.panel;
+    drop-shadow-blur: 30px * Theme.scale;
+    drop-shadow-color: #000000B0;
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 40 * Theme.u;
+        width: 150 * Theme.u;
+        height: 150 * Theme.u;
+        border-radius: self.width / 2;
+        background: Theme.placeholder;
+        clip: root.has-picture;
+        if root.has-picture: Image { width: 100%; height: 100%; source: root.picture; image-fit: cover; }
+        if !root.has-picture: Icon { glyph: "\u{E77B}"; size: 56px * Theme.scale; }
+    }
+    if root.presence >= 0: Rectangle {
+        x: parent.width / 2 + 42 * Theme.u;
+        y: 152 * Theme.u;
+        width: 36 * Theme.u;
+        height: 36 * Theme.u;
+        border-radius: self.width / 2;
+        border-width: 5 * Theme.u;
+        border-color: Theme.panel;
+        background: root.presence == 0 ? #3BA55C : root.presence == 1 ? #FAA61A : root.presence == 2 ? #ED4245 : #747F8D;
+    }
+    Text {
+        x: 24 * Theme.u;
+        y: 214 * Theme.u;
+        width: parent.width - 48 * Theme.u;
+        horizontal-alignment: center;
+        text: root.name;
+        font-family: Theme.ui-font;
+        font-size: 34px * Theme.scale;
+        font-weight: 700;
+        color: Theme.text;
+        overflow: elide;
+    }
+    Text {
+        x: 24 * Theme.u;
+        y: 266 * Theme.u;
+        width: parent.width - 48 * Theme.u;
+        horizontal-alignment: center;
+        text: root.status;
+        font-family: Theme.ui-font;
+        font-size: 22px * Theme.scale;
+        color: Theme.text-dim;
+    }
+    if root.playing != "": Rectangle {
+        x: 24 * Theme.u;
+        y: 312 * Theme.u;
+        width: parent.width - 48 * Theme.u;
+        height: 60 * Theme.u;
+        border-radius: 4 * Theme.u;
+        background: #FFFFFF14;
+        Icon { x: 16 * Theme.u; width: 40 * Theme.u; glyph: "\u{E7FC}"; size: 24px * Theme.scale; }
+        Text {
+            x: 66 * Theme.u;
+            width: parent.width - 82 * Theme.u;
+            text: root.playing;
+            font-family: Theme.ui-font;
+            font-size: 22px * Theme.scale;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    for it[i] in root.items: Rectangle {
+        x: 16 * Theme.u;
+        y: ((root.playing != "" ? 392 : 330) + i * 80) * Theme.u;
+        width: parent.width - 32 * Theme.u;
+        height: 72 * Theme.u;
+        FocusRing { target-width: parent.width; target-height: parent.height; focused: root.selected == i; }
+        Rectangle { visible: root.selected == i; border-radius: Theme.radius; background: #3A3A3A; }
+        Icon { x: 16 * Theme.u; width: 44 * Theme.u; glyph: it.glyph; size: 26px * Theme.scale; }
+        Text {
+            x: 80 * Theme.u;
+            text: it.label;
+            font-family: Theme.ui-font;
+            font-size: 25px * Theme.scale;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        TouchArea {
+            clicked => { root.clicked(i); }
+            changed has-hover => { if self.has-hover { root.hovered(i); } }
+        }
+    }
+}
+
+// Recent chats, as a card next to the Guide (like a friend's card): picture, name and last message.
+export component ChatsPanel inherits Rectangle {
+    in property <[GuideItem]> rows;
+    in property <int> selected;
+    callback clicked(int);
+    callback hovered(int);
+
+    x: 631 * Theme.u;
+    y: 33 * Theme.u;
+    width: 460 * Theme.u;
+    height: 110 * Theme.u + rows.length * 100 * Theme.u;
+    border-radius: 8 * Theme.u;
+    background: Theme.panel;
+    drop-shadow-blur: 30px * Theme.scale;
+    drop-shadow-color: #000000B0;
+
+    Text {
+        x: 32 * Theme.u;
+        y: 34 * Theme.u;
+        text: "Chats";
+        font-family: Theme.ui-font;
+        font-size: 32px * Theme.scale;
+        font-weight: 700;
+        color: Theme.text;
+    }
+    for it[i] in root.rows: Rectangle {
+        x: 16 * Theme.u;
+        y: (96 + i * 100) * Theme.u;
+        width: parent.width - 32 * Theme.u;
+        height: 92 * Theme.u;
+        FocusRing { target-width: parent.width; target-height: parent.height; focused: root.selected == i; }
+        Rectangle { visible: root.selected == i; border-radius: Theme.radius; background: #3A3A3A; }
+        Rectangle {
+            x: 10 * Theme.u;
+            width: 68 * Theme.u;
+            height: 68 * Theme.u;
+            border-radius: self.width / 2;
+            background: Theme.placeholder;
+            clip: it.has-image;
+            if it.has-image: Image { width: 100%; height: 100%; source: it.image; image-fit: cover; }
+            if !it.has-image: Icon { glyph: "\u{E77B}"; size: 28px * Theme.scale; }
+        }
+        if it.presence >= 0: Rectangle {
+            x: 58 * Theme.u;
+            y: 58 * Theme.u;
+            width: 24 * Theme.u;
+            height: 24 * Theme.u;
+            border-radius: self.width / 2;
+            border-width: 4 * Theme.u;
+            border-color: Theme.panel;
+            background: it.presence == 0 ? #3BA55C : it.presence == 1 ? #FAA61A : it.presence == 2 ? #ED4245 : #747F8D;
+        }
+        VerticalLayout {
+            x: 96 * Theme.u;
+            width: parent.width - self.x - 16 * Theme.u;
+            alignment: center;
+            Text {
+                text: it.label;
+                font-family: Theme.ui-font;
+                font-size: 25px * Theme.scale;
+                color: Theme.text;
+                overflow: elide;
+            }
+            Text {
+                text: it.subtitle;
+                font-family: Theme.ui-font;
+                font-size: 21px * Theme.scale;
+                color: Theme.text-dim;
+                overflow: elide;
+            }
+        }
+        TouchArea {
+            clicked => { root.clicked(i); }
+            changed has-hover => { if self.has-hover { root.hovered(i); } }
+        }
+    }
+}

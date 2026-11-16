@@ -1,0 +1,764 @@
+// Root window, modelled on the Xbox Series X|S dashboard. All navigation state and tile geometry are
+// owned by Rust (src/app.rs); this file only renders them and forwards input back via `key`/`pointer`.
+
+import { AboutSlint } from "std-widgets.slint";
+import { Theme, Icons } from "theme.slint";
+import { Tile, ProfileItem, Hint, Avatar, ArtTile, HintPill, Wallpaper, Icon, ChatStatus } from "components.slint";
+import { HomeScreen } from "home.slint";
+import { LibraryScreen, SidebarItem } from "library.slint";
+import { SettingsScreen, SettingTile } from "settings.slint";
+import { GamePage, GameButton, AchievementRow } from "game.slint";
+import { GuidePanel, GuideItem, GuideTab, ChatLine, MenuPanel, MenuItem, PowerPanel, FriendPanel, ChatsPanel, AudioPanel, AudioRow, PickerPanel, PickerItem, Keyboard, KeyView, InputField, Toast, ListScreen, ListItem } from "overlays.slint";
+import { ProfilePickerScreen } from "profiles.slint";
+import { SplashScreen, SplashPetal } from "splash.slint";
+
+export { SplashPetal, Tile, ProfileItem, Hint, SidebarItem, SettingTile, GuideItem, GuideTab, ChatLine, MenuItem, AudioRow, GameButton, AchievementRow, PickerItem, KeyView, ListItem }
+
+export enum Screen { splash, profiles, home, library, settings, files, search, about, signin, game }
+export enum Modal { none, guide, menu, picker, keyboard, audio, viewer, power, friend, chats }
+
+export component AppWindow inherits Window {
+    in property <string> app-title: "Win2Console";
+    in property <image> app-icon;
+    title: root.app-title;
+    icon: root.app-icon;
+    background: Theme.page;
+    default-font-family: "Segoe UI";
+    preferred-width: 1280px;
+    preferred-height: 720px;
+    min-width: 960px;
+    min-height: 540px;
+    forward-focus: keys;
+
+    in property <Screen> screen: Screen.splash;
+
+    // Startup animation frame (see src/splash.rs).
+    in property <string> splash-outline;
+    in property <float> splash-outline-opacity;
+    in property <[SplashPetal]> splash-petals;
+    in property <float> splash-sphere-radius;
+    in property <float> splash-sphere-opacity;
+    in property <float> splash-emblem-radius;
+    in property <float> splash-emblem-opacity;
+    in property <float> splash-wordmark-opacity;
+    in property <float> splash-fade: 1;
+    in property <float> splash-shadow-radius;
+    in property <float> splash-shadow-opacity;
+    in property <Modal> modal: Modal.none;
+    in property <color> accent: #107C10;
+    // 0 = generated wallpaper, 1 = solid colour, 2 = custom image
+    in property <int> background-mode;
+    in property <image> background-image;
+    // Game art behind Home sections.
+    in property <image> backdrop;
+    in property <bool> has-backdrop;
+    in property <[Hint]> hints;
+    in property <string> toast;
+
+    in property <ProfileItem> current-profile;
+    in property <string> clock;
+    in property <string> controller-status;
+    in property <string> controller-icons;
+    in property <string> guide-status;
+    in property <string> guide-status-icons;
+    // Party chat status icons (shown while in a party).
+    in property <bool> in-party;
+    in property <bool> mic-muted;
+    in property <bool> deafened;
+    // Menu size setting (1.0 = fit the 1920×1080 design to the window).
+    in property <float> menu-scale: 1.0;
+
+    in property <[ProfileItem]> profiles;
+    in property <int> profiles-focus;
+
+    in property <int> home-mode;
+    in property <[Tile]> hero;
+    in property <int> hero-focus;
+    in property <[string]> home-sections;
+    in property <int> home-section;
+    in property <[Tile]> section-tiles;
+    in property <int> section-focus;
+    in property <float> section-scroll;
+
+    in property <[SidebarItem]> lib-categories;
+    in property <int> lib-category;
+    in property <bool> lib-sidebar-focused: true;
+    in property <string> lib-title;
+    in property <string> lib-sort;
+    in property <int> lib-control-focus: -1;
+    in property <[Tile]> games;
+    in property <int> lib-focus: -1;
+    in property <float> lib-scroll;
+    in property <string> lib-empty;
+
+    in property <[string]> settings-categories;
+    in property <int> settings-category;
+    in property <bool> settings-in-content;
+    in property <string> settings-title;
+    in property <[SettingTile]> settings-tiles;
+    in property <int> settings-focus;
+    in property <string> settings-glyph: "\u{E713}";
+
+    in property <string> list-title;
+    in property <string> list-subtitle;
+    in property <[ListItem]> list-items;
+    in property <int> list-focus;
+
+    in property <[GuideTab]> guide-tabs;
+    in property <int> guide-tab;
+    in property <[GuideItem]> guide-items;
+    in property <[string]> guide-buttons;
+    in property <int> guide-focus;
+    in property <float> guide-scroll;
+    // In-game Guide: a frozen capture of the game behind the Guide.
+    in property <bool> ingame;
+    // Transitions (0→1, driven from Rust): page change, modal open, launch screen.
+    in property <float> view-t: 1;
+    in property <float> modal-t: 1;
+    in property <bool> launching;
+    in property <[GuideItem]> chat-rows;
+    in property <string> friend-name;
+    in property <string> friend-status;
+    in property <string> friend-playing;
+    in property <image> friend-picture;
+    in property <bool> friend-has-picture;
+    in property <int> friend-presence;
+    in property <string> gamerscore;
+    in property <float> hero-row-scroll;
+    in property <float> section-t: 1;
+    in property <int> section-dir: 1;
+    in property <string> game-title;
+    in property <string> game-subtitle;
+    in property <string> game-stats;
+    in property <image> game-cover;
+    in property <bool> game-has-cover;
+    in property <image> game-art;
+    in property <[GameButton]> game-buttons;
+    in property <[AchievementRow]> game-achievements;
+    in property <string> game-empty;
+    in property <int> game-focus;
+    in property <image> viewer-image;
+    in property <string> viewer-title;
+    in property <float> launch-t;
+    in property <float> launch-fade;
+    in property <image> launch-cover;
+    in property <image> launch-art;
+    in property <string> launch-title;
+    in property <string> launch-status;
+    in property <image> ingame-backdrop;
+    in property <[AudioRow]> audio-rows;
+    in property <int> audio-focus;
+    in property <bool> chat-mode;
+    in property <string> chat-title;
+    in property <string> chat-subtitle;
+    in property <[ChatLine]> chat-lines;
+    in property <string> compose-text;
+    in property <bool> composing;
+
+    in property <string> menu-title;
+    in property <string> menu-message;
+    in property <[MenuItem]> menu-items;
+    in property <int> menu-focus;
+
+    in property <string> picker-title;
+    in property <[PickerItem]> picker-items;
+    in property <int> picker-focus;
+    in property <int> picker-columns: 4;
+    in property <bool> picker-round;
+
+    in property <string> kb-title;
+    in property <string> kb-before;
+    in property <string> kb-after;
+    in property <string> kb-placeholder;
+    in property <[KeyView]> kb-keys;
+    in property <int> kb-focus;
+
+    in property <[Tile]> search-results;
+    in property <int> search-focus: -1;
+
+    // Sign-in page (the web page itself is a WebView2 child window placed over `signin-frame`).
+    in property <string> signin-title;
+    in property <string> signin-glyph;
+    in property <string> signin-status;
+    in property <bool> signin-typing;
+    in property <string> signin-field;
+
+    // The window's size in design pixels, for Rust's layout code.
+    out property <float> design-width: root.width / Theme.scale / 1px;
+    out property <float> design-height: root.height / Theme.scale / 1px;
+    out property <float> ui-scale: Theme.scale;
+
+    callback key(string) -> bool;
+    // Pointer input: area, row, column/index, and whether it was a click (false = hover).
+    callback pointer(string, int, int, bool);
+
+    init => {
+        Theme.scale = min(self.width / 1920px, self.height / 1080px) * root.menu-scale;
+        Theme.accent = self.accent;
+        keys.focus();
+    }
+    changed width => { Theme.scale = min(self.width / 1920px, self.height / 1080px) * root.menu-scale; }
+    changed height => { Theme.scale = min(self.width / 1920px, self.height / 1080px) * root.menu-scale; }
+    changed menu-scale => { Theme.scale = min(self.width / 1920px, self.height / 1080px) * root.menu-scale; }
+    changed accent => { Theme.accent = self.accent; }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if root.key(event.text) { return accept; }
+            return reject;
+        }
+    }
+
+    // ---- Background
+    property <bool> dashboard-bg: screen == Screen.profiles || screen == Screen.home || screen == Screen.search;
+    if dashboard-bg && background-mode == 0: Wallpaper { }
+    if dashboard-bg && background-mode == 1: Rectangle { background: Theme.accent.mix(#000000, 0.3); }
+    if dashboard-bg && background-mode == 2: Rectangle {
+        background: #000000;
+        Image { width: 100%; height: 100%; source: root.background-image; image-fit: cover; }
+        Rectangle { background: #00000040; }
+    }
+    // Focused game's art behind the dashboard (fades in and out).
+    if screen == Screen.home: Rectangle {
+        opacity: root.has-backdrop ? 1 : 0;
+        animate opacity { duration: 350ms; easing: ease-out; }
+        background: #000000;
+        Image { width: 100%; height: 100%; source: root.backdrop; image-fit: cover; opacity: 0.75; }
+        Rectangle { background: @linear-gradient(90deg, #000000B0 0%, #00000030 60%, #00000010 100%); }
+    }
+
+    // ---- Screens (fade and rise into place when the page changes, like the Xbox dashboard)
+    Rectangle {
+        opacity: root.view-t;
+        y: (1 - root.view-t) * 36px * Theme.scale;
+        if screen == Screen.profiles: ProfilePickerScreen {
+            profiles: root.profiles;
+            selected: root.profiles-focus;
+            clicked(i) => { root.pointer("profiles", 0, i, true); }
+            hovered(i) => { root.pointer("profiles", 0, i, false); }
+        }
+
+        if screen == Screen.home: HomeScreen {
+            mode: root.home-mode;
+            hero: root.hero;
+            hero-focus: root.hero-focus;
+            row-scroll: root.hero-row-scroll;
+            section-t: root.section-t;
+            section-dir: root.section-dir;
+            sections: root.home-sections;
+            section: root.home-section;
+            section-tiles: root.section-tiles;
+            section-focus: root.section-focus;
+            section-scroll: root.section-scroll;
+            clicked(i) => { root.pointer(root.home-mode == 0 ? "hero" : "section", 0, i, true); }
+            hovered(i) => { root.pointer(root.home-mode == 0 ? "hero" : "section", 0, i, false); }
+        }
+        // Top bar (Home): profile picture + name on the left, status + clock on the right.
+        // Hidden while the Guide is open (it shows its own big clock).
+        if screen == Screen.home && home-mode == 0 && modal != Modal.guide: Rectangle {
+            Avatar { x: 102 * Theme.u; y: 68 * Theme.u; profile: root.current-profile; size: 60 * Theme.u; }
+            Text {
+                x: 180 * Theme.u;
+                y: 68 * Theme.u;
+                height: 60 * Theme.u;
+                text: root.current-profile.name;
+                font-family: Theme.ui-font;
+                font-size: 26px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            // Gamerscore under the name.
+            if root.gamerscore != "": Text {
+                x: 180 * Theme.u;
+                y: 112 * Theme.u;
+                text: root.gamerscore;
+                font-family: Theme.ui-font;
+                font-size: 20px * Theme.scale;
+                color: Theme.text-dim;
+            }
+            HorizontalLayout {
+                x: root.width - self.width - 112 * Theme.u;
+                y: 68 * Theme.u;
+                width: self.preferred-width;
+                height: 60 * Theme.u;
+                spacing: 12 * Theme.u;
+                if root.in-party: ChatStatus {
+                    mic-muted: root.mic-muted;
+                    deafened: root.deafened;
+                    size: 36px * Theme.scale;
+                    // The battery glyph's ink sits 8.5px (at 46px) below its centre; match it.
+                    drop: 8.5px * Theme.scale;
+                }
+                if root.controller-icons != "": Text {
+                    text: root.controller-icons;
+                    font-family: Theme.icon-font;
+                    // The battery glyph sits small in its box, so it needs a bigger size to match the clock.
+                    font-size: 46px * Theme.scale;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+                if root.controller-status != "": Text {
+                    text: root.controller-status;
+                    font-family: Theme.ui-font;
+                    font-size: 22px * Theme.scale;
+                    color: Theme.text-dim;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.clock;
+                    font-family: Theme.ui-font;
+                    font-size: 33px * Theme.scale;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if screen == Screen.library: LibraryScreen {
+            profile: root.current-profile;
+            categories: root.lib-categories;
+            category: root.lib-category;
+            sidebar-focused: root.lib-sidebar-focused;
+            title: root.lib-title;
+            sort-label: root.lib-sort;
+            control-focus: root.lib-control-focus;
+            games: root.games;
+            game-focus: root.lib-focus;
+            scroll: root.lib-scroll;
+            empty-text: root.lib-empty;
+            category-clicked(i) => { root.pointer("lib-category", 0, i, true); }
+            control-clicked(i) => { root.pointer("lib-control", 0, i, true); }
+            game-clicked(i) => { root.pointer("lib-game", 0, i, true); }
+            game-hovered(i) => { root.pointer("lib-game", 0, i, false); }
+        }
+
+        if screen == Screen.settings: SettingsScreen {
+            profile: root.current-profile;
+            categories: root.settings-categories;
+            category: root.settings-category;
+            in-content: root.settings-in-content;
+            header-glyph: root.settings-glyph;
+            title: root.settings-title;
+            tiles: root.settings-tiles;
+            tile-focus: root.settings-focus;
+            category-clicked(i) => { root.pointer("settings-category", 0, i, true); }
+            tile-clicked(i) => { root.pointer("settings-tile", 0, i, true); }
+            tile-hovered(i) => { root.pointer("settings-tile", 0, i, false); }
+        }
+
+        if screen == Screen.files: ListScreen {
+            title: root.list-title;
+            subtitle: root.list-subtitle;
+            items: root.list-items;
+            selected: root.list-focus;
+            clicked(i) => { root.pointer("list", 0, i, true); }
+            hovered(i) => { root.pointer("list", 0, i, false); }
+        }
+
+        if screen == Screen.game: GamePage {
+            title: root.game-title;
+            subtitle: root.game-subtitle;
+            stats: root.game-stats;
+            cover-image: root.game-cover;
+            has-cover: root.game-has-cover;
+            art: root.game-art;
+            buttons: root.game-buttons;
+            achievements: root.game-achievements;
+            empty-text: root.game-empty;
+            selected: root.game-focus;
+            clicked(i) => { root.pointer("game", 0, i, true); }
+            hovered(i) => { root.pointer("game", 0, i, false); }
+        }
+
+        if screen == Screen.search: Rectangle {
+            Rectangle { background: #00000080; }
+            InputField {
+                x: 103 * Theme.u;
+                y: 100 * Theme.u;
+                width: (root.design-width - 206) * Theme.u;
+                before: root.kb-before;
+                after: root.kb-after;
+                placeholder: root.kb-placeholder;
+                focused: root.search-focus < 0;
+            }
+            Text {
+                x: 105 * Theme.u;
+                y: 196 * Theme.u;
+                text: root.search-results.length > 0 ? "Results" : root.kb-before == "" && root.kb-after == "" ? "" : "No games match";
+                font-family: Theme.ui-font;
+                font-size: 30px * Theme.scale;
+                color: Theme.text;
+            }
+            for t[i] in root.search-results: ArtTile {
+                x: t.x * Theme.u;
+                y: t.y * Theme.u;
+                width: t.w * Theme.u;
+                height: t.h * Theme.u;
+                tile: t;
+                focused: root.search-focus == i;
+                clicked => { root.pointer("search", 0, i, true); }
+                hovered => { root.pointer("search", 0, i, false); }
+            }
+            Keyboard {
+                x: (root.width - self.width) / 2;
+                y: root.height - self.height - 50 * Theme.u;
+                keys: root.kb-keys;
+                selected: root.search-focus < 0 ? root.kb-focus : -1;
+                clicked(i) => { root.pointer("key", 0, i, true); }
+                hovered(i) => { root.pointer("key", 0, i, false); }
+            }
+        }
+
+        if screen == Screen.signin: Rectangle {
+            background: Theme.page;
+            Icon { x: 103 * Theme.u; y: 52 * Theme.u; width: 60 * Theme.u; height: 60 * Theme.u; glyph: root.signin-glyph; size: 40px * Theme.scale; }
+            Text {
+                x: 180 * Theme.u;
+                y: 52 * Theme.u;
+                height: 60 * Theme.u;
+                text: root.signin-title;
+                font-family: Theme.ui-font;
+                font-size: 40px * Theme.scale;
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            Text {
+                x: root.width - self.width - 103 * Theme.u;
+                y: 52 * Theme.u;
+                height: 60 * Theme.u;
+                text: root.signin-status;
+                font-family: Theme.ui-font;
+                font-size: 24px * Theme.scale;
+                color: Theme.text-dim;
+                vertical-alignment: center;
+            }
+            // Frame behind the web page (visible while it loads).
+            Rectangle {
+                x: 99 * Theme.u;
+                y: 146 * Theme.u;
+                width: (root.design-width - 198) * Theme.u;
+                // Fills the space between the title and the docked keyboard (302 tall, 40 from the bottom).
+                height: (root.design-height - 531) * Theme.u;
+                border-radius: 6 * Theme.u;
+                border-width: (root.signin-typing ? 0 : 3) * Theme.u;
+                border-color: Theme.focus;
+                background: #FFFFFF;
+                Text { text: "Loading…"; font-family: Theme.ui-font; font-size: 26px * Theme.scale; color: #666666; }
+            }
+            if root.signin-typing && root.signin-field != "": Text {
+                x: (root.width - 1004 * Theme.u) / 2;
+                y: (root.design-height - 376) * Theme.u;
+                text: root.signin-field;
+                font-family: Theme.ui-font;
+                font-size: 22px * Theme.scale;
+                color: Theme.text-dim;
+            }
+            Keyboard {
+                x: (root.width - self.width) / 2;
+                y: root.height - self.height - 40 * Theme.u;
+                opacity: root.signin-typing ? 1 : 0.45;
+                keys: root.kb-keys;
+                selected: root.signin-typing ? root.kb-focus : -1;
+                clicked(i) => { root.pointer("key", 0, i, true); }
+                hovered(i) => { root.pointer("key", 0, i, false); }
+            }
+        }
+
+        if screen == Screen.about: Rectangle {
+            background: Theme.page;
+            VerticalLayout {
+                x: 146 * Theme.u;
+                y: 62 * Theme.u;
+                width: root.width - 292 * Theme.u;
+                spacing: 24 * Theme.u;
+                alignment: start;
+                Text { text: "About Win2Console"; font-family: Theme.ui-font; font-size: 45px * Theme.scale; font-weight: 600; color: Theme.text; }
+                Text {
+                    text: "A controller-first game launcher for Windows.\nControllers via SDL3. Interface built with Slint.";
+                    font-family: Theme.ui-font;
+                    font-size: 25px * Theme.scale;
+                    color: Theme.text-dim;
+                }
+                HorizontalLayout { alignment: start; AboutSlint { } }
+            }
+        }
+    }
+
+    if screen == Screen.splash: SplashScreen {
+        outline: root.splash-outline;
+        outline-opacity: root.splash-outline-opacity;
+        petals: root.splash-petals;
+        sphere-radius: root.splash-sphere-radius;
+        sphere-opacity: root.splash-sphere-opacity;
+        emblem-radius: root.splash-emblem-radius;
+        emblem-opacity: root.splash-emblem-opacity;
+        wordmark-opacity: root.splash-wordmark-opacity;
+        fade: root.splash-fade;
+        shadow-radius: root.splash-shadow-radius;
+        shadow-opacity: root.splash-shadow-opacity;
+        // A left click skips it (like the A button).
+        TouchArea { clicked => { root.pointer("splash", 0, 0, true); } }
+    }
+
+    // ---- In-game backdrop (covers the dashboard while the Guide is open over a game)
+    if ingame: Rectangle {
+        background: #000000;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.ingame-backdrop;
+            image-fit: cover;
+        }
+    }
+
+    // ---- Modals
+    if modal == Modal.guide || modal == Modal.friend || modal == Modal.chats: GuidePanel {
+        opacity: root.modal-t;
+        slide: (1 - root.modal-t) * -120px * Theme.scale;
+        profile: root.current-profile;
+        tabs: root.guide-tabs;
+        tab: root.guide-tab;
+        items: root.guide-items;
+        buttons: root.guide-buttons;
+        selected: root.guide-focus;
+        clock: root.clock;
+        status: root.guide-status;
+        status-icons: root.guide-status-icons;
+        in-party: root.in-party;
+        mic-muted: root.mic-muted;
+        deafened: root.deafened;
+        scroll: root.guide-scroll;
+        chat-mode: root.chat-mode;
+        chat-title: root.chat-title;
+        chat-subtitle: root.chat-subtitle;
+        chat-lines: root.chat-lines;
+        compose-text: root.compose-text;
+        compose-focused: root.composing;
+        clicked(i) => { root.pointer("guide", 0, i, true); }
+        hovered(i) => { root.pointer("guide", 0, i, false); }
+        tab-clicked(i) => { root.pointer("guide-tab", 0, i, true); }
+    }
+    // Docked keyboard for writing a chat message, to the right of the Guide.
+    if modal == Modal.guide && composing: Keyboard {
+        x: max(640 * Theme.u, (root.width - self.width) / 2);
+        y: root.height - self.height - 50 * Theme.u;
+        keys: root.kb-keys;
+        selected: root.kb-focus;
+        clicked(i) => { root.pointer("key", 0, i, true); }
+        hovered(i) => { root.pointer("key", 0, i, false); }
+    }
+    if modal == Modal.menu: MenuPanel {
+        opacity: root.modal-t;
+        title: root.menu-title;
+        message: root.menu-message;
+        items: root.menu-items;
+        selected: root.menu-focus;
+        clicked(i) => { root.pointer("menu", 0, i, true); }
+        hovered(i) => { root.pointer("menu", 0, i, false); }
+    }
+    if modal == Modal.chats: ChatsPanel {
+        rows: root.chat-rows;
+        selected: root.menu-focus;
+        clicked(i) => { root.pointer("chats", 0, i, true); }
+        hovered(i) => { root.pointer("chats", 0, i, false); }
+    }
+    if modal == Modal.friend: FriendPanel {
+        name: root.friend-name;
+        status: root.friend-status;
+        playing: root.friend-playing;
+        picture: root.friend-picture;
+        has-picture: root.friend-has-picture;
+        presence: root.friend-presence;
+        items: root.menu-items;
+        selected: root.menu-focus;
+        clicked(i) => { root.pointer("friend", 0, i, true); }
+        hovered(i) => { root.pointer("friend", 0, i, false); }
+    }
+    if modal == Modal.power: PowerPanel {
+        opacity: root.modal-t;
+        items: root.menu-items;
+        selected: root.menu-focus;
+        clicked(i) => { root.pointer("power", 0, i, true); }
+        hovered(i) => { root.pointer("power", 0, i, false); }
+    }
+    if modal == Modal.audio: AudioPanel {
+        opacity: root.modal-t;
+        rows: root.audio-rows;
+        selected: root.audio-focus;
+        clicked(i) => { root.pointer("audio", 0, i, true); }
+        hovered(i) => { root.pointer("audio", 0, i, false); }
+    }
+    if modal == Modal.viewer: Rectangle {
+        opacity: root.modal-t;
+        background: #000000F0;
+        TouchArea { }
+        Image {
+            x: 60 * Theme.u;
+            y: 110 * Theme.u;
+            width: parent.width - 120 * Theme.u;
+            height: parent.height - 220 * Theme.u;
+            source: root.viewer-image;
+            image-fit: contain;
+        }
+        Text {
+            x: 60 * Theme.u;
+            y: 40 * Theme.u;
+            text: root.viewer-title;
+            font-family: Theme.ui-font;
+            font-size: 28px * Theme.scale;
+            color: Theme.text;
+        }
+    }
+    if modal == Modal.picker: PickerPanel {
+        opacity: root.modal-t;
+        title: root.picker-title;
+        items: root.picker-items;
+        selected: root.picker-focus;
+        columns: root.picker-columns;
+        round: root.picker-round;
+        clicked(i) => { root.pointer("picker", 0, i, true); }
+        hovered(i) => { root.pointer("picker", 0, i, false); }
+    }
+    if modal == Modal.keyboard: Rectangle {
+        background: #000000D0;
+        TouchArea { }
+        Text {
+            x: 105 * Theme.u;
+            y: 40 * Theme.u;
+            text: root.kb-title;
+            font-family: Theme.ui-font;
+            font-size: 30px * Theme.scale;
+            color: Theme.text;
+        }
+        InputField {
+            x: 103 * Theme.u;
+            y: 100 * Theme.u;
+            width: (root.design-width - 206) * Theme.u;
+            before: root.kb-before;
+            after: root.kb-after;
+            placeholder: root.kb-placeholder;
+        }
+        Keyboard {
+            x: (root.width - self.width) / 2;
+            y: root.height - self.height - 50 * Theme.u;
+            keys: root.kb-keys;
+            selected: root.kb-focus;
+            clicked(i) => { root.pointer("key", 0, i, true); }
+            hovered(i) => { root.pointer("key", 0, i, false); }
+        }
+    }
+
+    // ---- Launch screen: the game's art while it starts
+    if launching: Rectangle {
+        opacity: root.launch-fade;
+        background: #000000;
+        TouchArea { }
+        Image { width: 100%; height: 100%; source: root.launch-art; image-fit: cover; opacity: 0.35; }
+        Rectangle { background: @linear-gradient(0deg, #000000E0 0%, #00000060 60%, #00000080 100%); }
+        launch-box := Rectangle {
+            width: 360 * Theme.u;
+            height: 480 * Theme.u;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2 - 60 * Theme.u + (1 - root.launch-fade) * 30 * Theme.u;
+            border-radius: 6 * Theme.u;
+            background: Theme.accent-tile;
+            drop-shadow-blur: 40px * Theme.scale;
+            drop-shadow-color: #000000C0;
+            clip: true;
+            Image { width: 100%; height: 100%; source: root.launch-cover; image-fit: cover; }
+        }
+        Text {
+            x: (parent.width - self.width) / 2;
+            y: launch-box.y + launch-box.height + 40 * Theme.u;
+            text: root.launch-title;
+            font-family: Theme.ui-font;
+            font-size: 40px * Theme.scale;
+            font-weight: 600;
+            color: Theme.text;
+        }
+        Text {
+            x: (parent.width - self.width) / 2;
+            y: launch-box.y + launch-box.height + 100 * Theme.u;
+            text: root.launch-status;
+            font-family: Theme.ui-font;
+            font-size: 24px * Theme.scale;
+            color: Theme.text-dim;
+        }
+        // Three pulsing dots.
+        for d in 3: Rectangle {
+            x: parent.width / 2 + (d - 1) * 28 * Theme.u - 6 * Theme.u;
+            y: launch-box.y + launch-box.height + 160 * Theme.u;
+            width: 12 * Theme.u;
+            height: 12 * Theme.u;
+            border-radius: 6 * Theme.u;
+            background: Theme.text;
+            opacity: 0.25 + 0.75 * Math.max(0, Math.sin((root.launch-t * 2.2 - d * 0.22) * 360deg));
+        }
+    }
+
+    // ---- Hints and toasts (always on top)
+    HintPill {
+        x: root.width - self.width - 60 * Theme.u;
+        y: root.height - self.height - 52 * Theme.u;
+        hints: root.hints;
+    }
+    Toast {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 140 * Theme.u;
+        message: root.toast;
+    }
+}
+
+// Startup video host: its own borderless full-screen window above the dashboard, so the dashboard is fully
+// drawn underneath and closing this reveals it without a flash.
+export component VideoWindow inherits Window {
+    title: "Win2Console";
+    background: #000000;
+    no-frame: true;
+    callback key(string) -> bool;
+    forward-focus: fs;
+    fs := FocusScope {
+        key-pressed(event) => {
+            if root.key(event.text) { return accept; }
+            return reject;
+        }
+    }
+}
+
+// Notification pop-up shown over games (its own small always-on-top window that never takes focus).
+export component NotifyWindow inherits Window {
+    title: "Win2Console notification";
+    no-frame: true;
+    always-on-top: true;
+    background: #1F1F1F;
+    in property <string> message;
+    in property <color> accent: #107C10;
+    Rectangle { x: 0; width: root.height * 0.07; background: root.accent; }
+    Rectangle {
+        x: root.height * 0.24;
+        y: (root.height - self.height) / 2;
+        width: root.height * 0.52;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: root.accent;
+        Text {
+            text: "\u{E7E7}";
+            font-family: "Segoe MDL2 Assets";
+            font-size: root.height * 0.24;
+            color: #FFFFFF;
+        }
+    }
+    Text {
+        x: root.height * 0.98;
+        width: root.width - self.x - root.height * 0.2;
+        height: root.height;
+        text: root.message;
+        font-family: "Segoe UI";
+        font-size: root.height * 0.22;
+        color: #FFFFFF;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        overflow: elide;
+    }
+}
