@@ -2,6 +2,7 @@
 //! "main" thread; Slint never touches SDL, so there is no conflict).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use sdl3::GamepadSubsystem;
@@ -18,7 +19,32 @@ pub enum InputEvent {
     Nav(NavAction),
     /// The set of connected controllers (or their battery levels) changed.
     Controllers(Vec<ControllerInfo>),
+    /// Mouse mode only (see [`set_mouse_mode`]).
+    Mouse(MouseEvent),
 }
+
+/// The controller as a mouse: left stick moves, right stick scrolls, A clicks, X right-clicks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseEvent {
+    Move(i32, i32),
+    Button { right: bool, down: bool },
+    /// Wheel units (120 = one notch); vertical, horizontal.
+    Wheel(i32, i32),
+}
+
+static MOUSE_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Turns the controller into a mouse (for the desktop). Other buttons, like the Guide, still report as usual.
+pub fn set_mouse_mode(on: bool) {
+    MOUSE_MODE.store(on, Ordering::Relaxed);
+}
+
+fn mouse_mode() -> bool {
+    MOUSE_MODE.load(Ordering::Relaxed)
+}
+
+/// How often the pointer moves in mouse mode.
+const MOUSE_TICK: Duration = Duration::from_millis(8);
 
 /// How often battery levels are re-read.
 const BATTERY_POLL: Duration = Duration::from_secs(30);
@@ -82,9 +108,13 @@ fn run(sink: &dyn Fn(InputEvent)) -> Result<(), Box<dyn std::error::Error>> {
     };
     report(&open, true);
 
+    let mut pointer = Pointer::default();
     loop {
         let now = Instant::now();
-        let wait = repeater.next_due(now).unwrap_or(IDLE_WAIT).min(IDLE_WAIT);
+        let mut wait = repeater.next_due(now).unwrap_or(IDLE_WAIT).min(IDLE_WAIT);
+        if mouse_mode() {
+            wait = wait.min(MOUSE_TICK);
+        }
         if let Some(event) = pump.wait_event_timeout(wait) {
             handle(event, &gamepads, &mut open, &mut sticks, &mut repeater, sink, &mut report);
             // Drain anything else that's queued before checking repeats.
@@ -94,6 +124,9 @@ fn run(sink: &dyn Fn(InputEvent)) -> Result<(), Box<dyn std::error::Error>> {
         }
         if let Some(action) = repeater.tick(Instant::now()) {
             sink(InputEvent::Nav(action));
+        }
+        if mouse_mode() {
+            pointer.tick(&open, sink);
         }
         if last_battery.elapsed() >= BATTERY_POLL {
             last_battery = Instant::now();
@@ -127,6 +160,12 @@ fn handle(
             sticks.remove(&which);
             report(open, false);
         }
+        Event::GamepadButtonDown { button: b @ (Button::South | Button::West), .. } if mouse_mode() => {
+            sink(InputEvent::Mouse(MouseEvent::Button { right: b == Button::West, down: true }));
+        }
+        Event::GamepadButtonUp { button: b @ (Button::South | Button::West), .. } if mouse_mode() => {
+            sink(InputEvent::Mouse(MouseEvent::Button { right: b == Button::West, down: false }));
+        }
         Event::GamepadButtonDown { button, .. } => {
             if let Some(action) = map_button(button) {
                 repeater.press(action, Instant::now());
@@ -138,6 +177,7 @@ fn handle(
                 repeater.release(action);
             }
         }
+        Event::GamepadAxisMotion { .. } if mouse_mode() => {}
         Event::GamepadAxisMotion { which, axis, value, .. } => {
             let is_x = match axis {
                 Axis::LeftX => true,
@@ -155,6 +195,45 @@ fn handle(
             }
         }
         _ => {}
+    }
+}
+
+/// Mouse mode's pointer: stick deflection (past a dead zone, on a curve) becomes speed; fractions carry over.
+#[derive(Default)]
+struct Pointer {
+    last: Option<Instant>,
+    rest: (f32, f32, f32, f32),
+}
+
+impl Pointer {
+    fn tick(&mut self, open: &HashMap<JoystickId, Gamepad>, sink: &dyn Fn(InputEvent)) {
+        let now = Instant::now();
+        if self.last.is_some_and(|t| now - t < MOUSE_TICK) {
+            return;
+        }
+        let dt = self.last.map_or(0.0, |t| (now - t).as_secs_f32().min(0.05));
+        self.last = Some(now);
+        // The stick pushed furthest across all controllers.
+        let pick = |axis: Axis| {
+            open.values().map(|p| p.axis(axis) as f32 / i16::MAX as f32).fold(0.0f32, |m, v| if v.abs() > m.abs() { v } else { m })
+        };
+        let curve = |v: f32| {
+            const DEAD: f32 = 0.15;
+            if v.abs() < DEAD { 0.0 } else { v.signum() * ((v.abs() - DEAD) / (1.0 - DEAD)).powf(2.2) }
+        };
+        // Pixels per second at full tilt; scroll in wheel units per second.
+        let (dx, dy) = (curve(pick(Axis::LeftX)) * 1800.0 * dt, curve(pick(Axis::LeftY)) * 1800.0 * dt);
+        let (sx, sy) = (curve(pick(Axis::RightX)) * 900.0 * dt, -curve(pick(Axis::RightY)) * 900.0 * dt);
+        let r = &mut self.rest;
+        let (mx, my, wx, wy) = (r.0 + dx, r.1 + dy, r.2 + sx, r.3 + sy);
+        let (ix, iy, iwx, iwy) = (mx.trunc(), my.trunc(), wx.trunc(), wy.trunc());
+        *r = (mx - ix, my - iy, wx - iwx, wy - iwy);
+        if ix != 0.0 || iy != 0.0 {
+            sink(InputEvent::Mouse(MouseEvent::Move(ix as i32, iy as i32)));
+        }
+        if iwx != 0.0 || iwy != 0.0 {
+            sink(InputEvent::Mouse(MouseEvent::Wheel(iwy as i32, iwx as i32)));
+        }
     }
 }
 

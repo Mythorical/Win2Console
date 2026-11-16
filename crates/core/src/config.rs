@@ -68,7 +68,12 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("config.json");
         let cfg =
-            Config { last_profile: Some(Uuid::new_v4()), start_with_windows: true, discord_app_id: Some("123".into()) };
+            Config {
+                last_profile: Some(Uuid::new_v4()),
+                start_with_windows: true,
+                discord_app_id: Some("123".into()),
+                ..Default::default()
+            };
         cfg.save(&path).unwrap();
         assert_eq!(Config::load(&path), cfg);
     }

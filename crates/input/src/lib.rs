@@ -5,7 +5,7 @@ mod repeat;
 mod sdl;
 
 pub use repeat::{Repeater, StickState};
-pub use sdl::{InputEvent, spawn};
+pub use sdl::{InputEvent, MouseEvent, set_mouse_mode, spawn};
 
 /// A navigation action, independent of the device that produced it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

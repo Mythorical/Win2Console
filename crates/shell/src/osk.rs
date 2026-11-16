@@ -188,6 +188,12 @@ impl Osk {
         }
     }
 
+    /// Empties the text (the virtual keyboard sends each key on and keeps nothing).
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+    }
+
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
             self.cursor -= 1;

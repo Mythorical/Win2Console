@@ -92,6 +92,8 @@ pub enum Event {
     Requests(Vec<Friend>),
     /// Something to tell the user (e.g. "Friend request sent").
     Notice(String),
+    /// Name and picture of someone we have messages with (who may not be on the friends list).
+    User(Friend),
     Audio(AudioInfo),
 }
 

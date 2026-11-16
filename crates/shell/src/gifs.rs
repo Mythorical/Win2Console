@@ -1,5 +1,5 @@
-//! GIFs and images linked in chat messages: Tenor / Giphy pages (resolved through their `og:image`) and
-//! direct image links (e.g. Discord's CDN). Decoded off the UI thread, shrunk, and animated by frame time.
+//! GIFs and images linked in chat messages: GIF sites' pages (Tenor, Giphy, Klipy, Imgur… resolved through
+//! their `og:image`) and direct image links. Decoded off the UI thread, shrunk, and animated by frame time.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -24,10 +24,18 @@ pub struct Gifs {
 
 /// The first image / GIF link in `text`, and the text without it.
 pub fn find_link(text: &str) -> Option<(String, String)> {
-    let url = text.split_whitespace().find(|w| is_media_link(w))?;
-    let rest = text.replacen(url, "", 1).trim().to_string();
-    Some((url.to_string(), rest))
+    let word = text.split_whitespace().find(|w| is_media_link(trim_link(w)))?;
+    let rest = text.replacen(word, "", 1).trim().to_string();
+    Some((trim_link(word).to_string(), rest))
 }
+
+/// Drops the <…> Discord uses to hide embeds, and trailing punctuation.
+fn trim_link(word: &str) -> &str {
+    word.trim_start_matches('<').trim_end_matches(['>', ')', ',', '.', '!', '?'])
+}
+
+/// Sites whose links are GIF (or image) pages.
+const GIF_SITES: [&str; 6] = ["tenor.com", "giphy.com", "klipy.com", "imgur.com", "gfycat.com", "gifdb.com"];
 
 fn is_media_link(word: &str) -> bool {
     let Some(rest) = word.strip_prefix("https://").or_else(|| word.strip_prefix("http://")) else {
@@ -36,9 +44,9 @@ fn is_media_link(word: &str) -> bool {
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
     let path = path.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
     let host = host.to_ascii_lowercase();
-    (host.ends_with("tenor.com") && path.starts_with("view/"))
-        || (host.ends_with("giphy.com") && (path.starts_with("gifs/") || path.starts_with("media/")))
-        || [".gif", ".png", ".jpg", ".jpeg", ".webp"].iter().any(|ext| path.ends_with(ext))
+    let site = GIF_SITES.iter().any(|s| host == *s || host.ends_with(&format!(".{s}")));
+    (site && !path.is_empty())
+        || [".gif", ".gifv", ".png", ".jpg", ".jpeg", ".webp"].iter().any(|ext| path.ends_with(ext))
 }
 
 impl Gifs {
@@ -112,7 +120,9 @@ fn get(url: &str) -> Result<Vec<u8>, String> {
 
 /// Downloads and decodes `url` (following a page's `og:image`) into frames with their delays (ms).
 fn fetch(url: &str) -> Result<Vec<(RgbaImage, u32)>, String> {
-    let mut bytes = get(url)?;
+    // Imgur's .gifv is a page; its .gif is the image.
+    let url = url.strip_suffix(".gifv").map_or_else(|| url.to_string(), |u| format!("{u}.gif"));
+    let mut bytes = get(&url)?;
     if bytes.iter().take(512).any(|&b| b == b'<') && !bytes.starts_with(b"GIF8") {
         let page = String::from_utf8_lossy(&bytes);
         let image = og_image(&page).ok_or("no image on the page")?;
@@ -131,19 +141,42 @@ fn fetch(url: &str) -> Result<Vec<(RgbaImage, u32)>, String> {
         }
         return Ok(frames);
     }
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        let decoder = image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(&bytes)).map_err(|e| e.to_string())?;
+        if decoder.has_animation() {
+            let mut frames = Vec::new();
+            for frame in decoder.into_frames().take(MAX_FRAMES) {
+                let frame = frame.map_err(|e| e.to_string())?;
+                let (num, den) = frame.delay().numer_denom_ms();
+                let ms = num / den.max(1);
+                frames.push((shrink(frame.into_buffer()), if ms <= 10 { 100 } else { ms }));
+            }
+            return Ok(frames);
+        }
+    }
     let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
     Ok(vec![(shrink(img.into_rgba8()), 1000)])
 }
 
+/// The page's preview image (`og:image`, or `twitter:image`), preferring an animated one.
 fn og_image(page: &str) -> Option<String> {
-    page.split("<meta").find_map(|tag| {
-        let tag = tag.split('>').next()?;
-        if !(tag.contains("\"og:image\"") || tag.contains("\"og:image:url\"")) {
-            return None;
-        }
-        let content = tag.split("content=\"").nth(1)?.split('"').next()?;
-        Some(content.replace("&amp;", "&"))
-    })
+    let images: Vec<String> = page
+        .split("<meta")
+        .filter_map(|tag| {
+            let tag = tag.split('>').next()?;
+            let wanted = ["\"og:image\"", "\"og:image:url\"", "\"og:image:secure_url\"", "\"twitter:image\""];
+            if !wanted.iter().any(|w| tag.contains(w)) {
+                return None;
+            }
+            let content = tag.split("content=\"").nth(1)?.split('"').next()?;
+            Some(content.replace("&amp;", "&"))
+        })
+        .collect();
+    let animated = |u: &&String| {
+        let path = u.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+        path.ends_with(".gif") || path.ends_with(".webp")
+    };
+    images.iter().find(animated).or(images.first()).cloned()
 }
 
 fn shrink(img: RgbaImage) -> RgbaImage {
@@ -167,6 +200,8 @@ mod tests {
         assert_eq!(rest, "lol");
         assert!(find_link("https://cdn.discordapp.com/attachments/1/2/a.GIF?ex=1").is_some());
         assert!(find_link("see https://example.com/page").is_none());
+        assert!(find_link("https://tenor.com/en-GB/view/cat-gif-1").is_some());
+        assert_eq!(find_link("<https://klipy.com/gifs/cat>").unwrap().0, "https://klipy.com/gifs/cat");
     }
 
     #[test]

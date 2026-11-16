@@ -5,6 +5,7 @@
 
 pub mod audio;
 pub mod capture;
+pub mod input;
 pub mod power;
 pub mod process;
 pub mod registry;

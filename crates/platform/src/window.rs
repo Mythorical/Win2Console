@@ -264,3 +264,46 @@ pub fn make_overlay(hwnd: isize) {
 
 #[cfg(not(windows))]
 pub fn make_overlay(_hwnd: isize) {}
+
+/// The window in front (to give focus back to it later).
+#[cfg(windows)]
+pub fn foreground_window() -> isize {
+    // SAFETY: plain Win32 query.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize }
+}
+
+#[cfg(not(windows))]
+pub fn foreground_window() -> isize {
+    0
+}
+
+/// Puts a window (from [`foreground_window`]) back in front.
+#[cfg(windows)]
+pub fn set_foreground_window(hwnd: isize) {
+    if hwnd != 0 {
+        // SAFETY: SetForegroundWindow tolerates stale handles.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(windows::Win32::Foundation::HWND(
+                hwnd as *mut _,
+            ));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_foreground_window(_hwnd: isize) {}
+
+/// Clips a window to a rounded rectangle (e.g. the pill-shaped achievement pop-up).
+#[cfg(windows)]
+pub fn round_window(hwnd: isize, width: i32, height: i32, radius: i32) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
+    // SAFETY: valid window handle; the window takes ownership of the region.
+    unsafe {
+        let rgn = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
+        SetWindowRgn(HWND(hwnd as *mut _), Some(rgn), true);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn round_window(_hwnd: isize, _width: i32, _height: i32, _radius: i32) {}

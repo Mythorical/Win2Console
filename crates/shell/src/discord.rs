@@ -144,6 +144,21 @@ mod ffi {
             out: *mut Discord_UserHandle,
         ) -> bool;
         pub fn Discord_RelationshipHandle_DiscordRelationshipType(s: *mut Discord_RelationshipHandle) -> i32;
+        pub fn Discord_RelationshipHandle_GameRelationshipType(s: *mut Discord_RelationshipHandle) -> i32;
+        pub fn Discord_RelationshipHandle_Id(s: *mut Discord_RelationshipHandle) -> u64;
+        pub fn Discord_UserHandle_Username(s: *mut Discord_UserHandle, out: *mut Discord_String);
+        pub fn Discord_Client_SetRelationshipDeletedCallback(
+            s: *mut Discord_Client,
+            cb: unsafe extern "C" fn(user: u64, discord: bool, ud: *mut c_void),
+            free: FreeFn,
+            ud: *mut c_void,
+        );
+        pub fn Discord_Client_SetRelationshipGroupsUpdatedCallback(
+            s: *mut Discord_Client,
+            cb: unsafe extern "C" fn(user: u64, ud: *mut c_void),
+            free: FreeFn,
+            ud: *mut c_void,
+        );
         pub fn Discord_RelationshipHandle_Drop(s: *mut Discord_RelationshipHandle);
         pub fn Discord_UserHandle_Id(s: *mut Discord_UserHandle) -> u64;
         pub fn Discord_UserHandle_DisplayName(s: *mut Discord_UserHandle, out: *mut Discord_String);
@@ -653,6 +668,13 @@ impl DiscordBackend {
             Discord_Client_SetStatusChangedCallback(&mut *client, on_status, Some(free_ud), ud(&inbox));
             Discord_Client_SetRelationshipCreatedCallback(&mut *client, on_relationship, Some(free_ud), ud(&inbox));
             Discord_Client_SetUserUpdatedCallback(&mut *client, on_user_updated, Some(free_ud), ud(&inbox));
+            Discord_Client_SetRelationshipDeletedCallback(&mut *client, on_relationship, Some(free_ud), ud(&inbox));
+            Discord_Client_SetRelationshipGroupsUpdatedCallback(
+                &mut *client,
+                on_user_updated,
+                Some(free_ud),
+                ud(&inbox),
+            );
             Discord_Client_SetMessageCreatedCallback(&mut *client, on_message, Some(free_ud), ud(&inbox));
             Discord_Client_SetActivityInviteCreatedCallback(&mut *client, on_invite, Some(free_ud), ud(&inbox));
         }
@@ -792,6 +814,7 @@ impl DiscordBackend {
             }
             Note::Conversations(users) => {
                 for user in users {
+                    self.emit_user(user);
                     self.load_history(user);
                 }
             }
@@ -799,10 +822,20 @@ impl DiscordBackend {
                 for (id, author, recipient, text, sent_ms) in msgs {
                     let from_me = author == self.me;
                     let peer = if from_me { recipient } else { author };
+                    self.emit_user(peer);
                     let message = social::Message { id, from_me, text, at: (sent_ms / 1000) as i64 };
                     (self.emit)(Event::Message { peer, message });
                 }
             }
+        }
+    }
+
+    /// Tells the app who `id` is (for chats with people who aren't on the friends list).
+    fn emit_user(&mut self, id: u64) {
+        if id != 0
+            && let Some(user) = self.user(Some(id))
+        {
+            (self.emit)(Event::User(user));
         }
     }
 
@@ -834,17 +867,28 @@ impl DiscordBackend {
             for i in 0..span.size {
                 let rel = span.ptr.add(i);
                 let kind = Discord_RelationshipHandle_DiscordRelationshipType(rel);
-                if kind == RELATIONSHIP_FRIEND || kind == RELATIONSHIP_PENDING_INCOMING {
+                let game_kind = Discord_RelationshipHandle_GameRelationshipType(rel);
+                let friend = kind == RELATIONSHIP_FRIEND || game_kind == RELATIONSHIP_FRIEND;
+                if friend || kind == RELATIONSHIP_PENDING_INCOMING {
+                    // The relationship doesn't always carry the user yet; look them up, and keep them even
+                    // without details (they fill in when Discord sends a user update).
+                    let id = Discord_RelationshipHandle_Id(rel);
                     let mut u = Discord_UserHandle::empty();
-                    if Discord_RelationshipHandle_User(rel, &mut u) {
+                    let f = if Discord_RelationshipHandle_User(rel, &mut u) {
                         let f = friend_from(&mut u);
-                        if kind == RELATIONSHIP_FRIEND {
-                            friends.push(f)
-                        } else {
-                            requests.push(f)
-                        }
                         Discord_UserHandle_Drop(&mut u);
-                    }
+                        Some(f)
+                    } else {
+                        self.user(Some(id))
+                    };
+                    let f = f.unwrap_or(Friend {
+                        id,
+                        name: String::new(),
+                        avatar: None,
+                        presence: Presence::Offline,
+                        activity: None,
+                    });
+                    if friend { friends.push(f) } else { requests.push(f) }
                 }
                 Discord_RelationshipHandle_Drop(rel);
             }
@@ -869,8 +913,8 @@ impl DiscordBackend {
             let author = Discord_MessageHandle_AuthorId(&mut m);
             let recipient = Discord_MessageHandle_RecipientId(&mut m);
             let sent_ms = Discord_MessageHandle_SentTimestamp(&mut m);
-            Discord_MessageHandle_Drop(&mut m);
             let channel = Discord_MessageHandle_ChannelId(&mut m);
+            Discord_MessageHandle_Drop(&mut m);
             let from_me = author == self.me;
             // Party (lobby) messages go to the party's conversation, labelled with the sender.
             let (peer, text) = if self.lobby == Some(channel) {
@@ -878,7 +922,9 @@ impl DiscordBackend {
                     if from_me { String::new() } else { self.user(Some(author)).map_or_else(String::new, |f| f.name) };
                 (channel, if name.is_empty() { text } else { format!("{name}: {text}") })
             } else {
-                (if from_me { recipient } else { author }, text)
+                let peer = if from_me { recipient } else { author };
+                self.emit_user(peer);
+                (peer, text)
             };
             let message = social::Message { id, from_me, text, at: (sent_ms / 1000) as i64 };
             (self.emit)(Event::Message { peer, message });
@@ -1011,6 +1057,12 @@ unsafe fn friend_from(u: *mut Discord_UserHandle) -> Friend {
     unsafe {
         let mut name = Discord_String { ptr: std::ptr::null_mut(), size: 0 };
         Discord_UserHandle_DisplayName(u, &mut name);
+        let mut name = take(name);
+        if name.is_empty() {
+            let mut username = Discord_String { ptr: std::ptr::null_mut(), size: 0 };
+            Discord_UserHandle_Username(u, &mut username);
+            name = take(username);
+        }
         let mut avatar = Discord_String { ptr: std::ptr::null_mut(), size: 0 };
         Discord_UserHandle_AvatarUrl(u, AVATAR_PNG, AVATAR_PNG, &mut avatar);
         let avatar = take(avatar);
@@ -1034,7 +1086,7 @@ unsafe fn friend_from(u: *mut Discord_UserHandle) -> Friend {
         };
         Friend {
             id: Discord_UserHandle_Id(u),
-            name: take(name),
+            name,
             avatar: (!avatar.is_empty()).then(|| avatar.into()),
             presence,
             activity: playing,

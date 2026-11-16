@@ -219,6 +219,7 @@ enum Setting {
     Restart,
     ShutDown,
     ExitToDesktop,
+    Quit,
 }
 
 fn settings_for(category: usize) -> &'static [Setting] {
@@ -244,7 +245,7 @@ fn settings_for(category: usize) -> &'static [Setting] {
             Setting::About,
             Setting::ExitToDesktop,
         ],
-        _ => &[Setting::Sleep, Setting::Restart, Setting::ShutDown, Setting::ExitToDesktop],
+        _ => &[Setting::Sleep, Setting::Restart, Setting::ShutDown, Setting::ExitToDesktop, Setting::Quit],
     }
 }
 
@@ -353,22 +354,43 @@ enum GuideAction {
     Screenshot,
     Audio,
     QuitGame,
+    ClearNotices,
+    Keyboard,
     None,
 }
 
 /// Guide tabs, in order (the last one shows the profile picture).
 /// "trophy" is drawn as a shape (the icon font has no trophy).
-const GUIDE_TABS: [&str; 6] = ["\u{E80F}", "\u{E716}", "\u{E8BD}", "trophy", "\u{E722}", ""];
+const GUIDE_TABS: [&str; 7] = ["\u{E80F}", "\u{E716}", "\u{E8BD}", "trophy", "\u{E722}", "\u{EA8F}", ""];
 const TAB_PEOPLE: usize = 1;
 const TAB_PARTY: usize = 2;
 const TAB_ACHIEVEMENTS: usize = 3;
 const TAB_CAPTURE: usize = 4;
+const TAB_NOTIFICATIONS: usize = 5;
+/// Notifications kept for the Guide (they're cleared when Win2Console closes).
+const NOTICES_MAX: usize = 50;
+
+/// Something that happened, listed in the Guide's notifications tab.
+#[derive(Debug, Clone)]
+struct Notice {
+    glyph: &'static str,
+    title: String,
+    body: String,
+    /// A person's picture or an achievement's icon.
+    image: Option<PathBuf>,
+    /// People get a round picture; achievements a square icon.
+    round: bool,
+    at: i64,
+    action: GuideAction,
+}
 
 /// A conversation open in the Guide.
 struct GuideChat {
     peer: u64,
     /// Keyboard open for writing a message.
     compose: Option<Osk>,
+    /// How many messages back from the latest the view is scrolled.
+    scroll: usize,
 }
 
 struct GuideEntry {
@@ -394,7 +416,7 @@ struct GuideEntry {
 
 const GUIDE_BUTTONS: [(&str, GuideAction); 5] = [
     ("\u{E721}", GuideAction::Search),
-    ("\u{E710}", GuideAction::AddGame),
+    ("\u{E765}", GuideAction::Keyboard),
     ("\u{E748}", GuideAction::SwitchProfile),
     ("\u{E767}", GuideAction::Audio),
     ("\u{E7E8}", GuideAction::Power),
@@ -730,6 +752,21 @@ pub struct App {
     social: Option<Box<dyn SocialBackend>>,
     social_status: social::Status,
     friends: Vec<Friend>,
+    /// People we have chats with, as Discord described them (they may not be friends).
+    users: HashMap<u64, Friend>,
+    notices: Vec<Notice>,
+    /// "Exit to desktop": Win2Console waits in the background, the controller works as a mouse, and the Guide
+    /// button brings the Guide back.
+    desktop: bool,
+    /// The virtual keyboard that types into the game or app in front.
+    vkeyboard: Option<(Osk, crate::ui::KeyboardWindow)>,
+    /// Achievements already seen (game, name); `None` until the first look at the add-on's database.
+    ach_seen: Option<std::collections::HashSet<(String, String)>>,
+    ach_timer: Rc<slint::Timer>,
+    /// Achievement pop-ups waiting to be shown, and the one on screen.
+    ach_queue: std::collections::VecDeque<cs_library::achievements::RecentUnlock>,
+    ach_popup: Option<crate::ui::AchievementWindow>,
+    ach_popup_timer: Rc<slint::Timer>,
     /// Conversations by friend id, oldest message first.
     chats: HashMap<u64, Vec<social::Message>>,
     party: Option<Party>,
@@ -859,6 +896,15 @@ impl App {
             social: None,
             social_status: social::Status::NotLinked,
             friends: Vec::new(),
+            users: HashMap::new(),
+            notices: Vec::new(),
+            desktop: false,
+            vkeyboard: None,
+            ach_seen: None,
+            ach_timer: Rc::new(slint::Timer::default()),
+            ach_queue: Default::default(),
+            ach_popup: None,
+            ach_popup_timer: Rc::new(slint::Timer::default()),
             chats: HashMap::new(),
             party: None,
             party_invite: None,
@@ -1023,7 +1069,14 @@ impl App {
             return true;
         }
         // While playing, the controller belongs to the game: only the Guide button reaches Win2Console.
-        if self.running.is_some() && action != NavAction::Guide && !cs_platform::window::own_window_is_foreground() {
+        if self.vkeyboard.is_some() {
+            self.nav_vkeyboard(action);
+            return true;
+        }
+        if (self.running.is_some() || self.desktop)
+            && action != NavAction::Guide
+            && !cs_platform::window::own_window_is_foreground()
+        {
             return false;
         }
         if let Some(l) = &mut self.launching {
@@ -1335,6 +1388,7 @@ impl App {
 
     fn sign_in(&mut self, index: usize) {
         let Some(profile) = self.profiles.get(index).cloned() else { return };
+        crate::sounds::play(crate::sounds::Sound::SignIn);
         self.config.last_profile = Some(profile.id);
         self.save_config();
 
@@ -1383,7 +1437,7 @@ impl App {
         if self.ingame.is_some() || matches!(self.modal, Some(ModalState::Guide { .. })) {
             self.close_guide();
         } else if self.current.is_some() && self.view != View::Profiles {
-            if self.running.is_some() && !cs_platform::window::own_window_is_foreground() {
+            if (self.running.is_some() || self.desktop) && !cs_platform::window::own_window_is_foreground() {
                 self.open_ingame_guide();
             }
             self.modal = Some(ModalState::Guide { tab: 0, focus: 0 });
@@ -1405,6 +1459,8 @@ impl App {
             ))
         });
         self.ingame = Some(InGame { capture, backdrop, shown: false });
+        // The controller navigates the Guide, not the pointer.
+        cs_input::set_mouse_mode(false);
         cs_platform::window::bring_own_window_to_front();
     }
 
@@ -1414,12 +1470,16 @@ impl App {
         self.guide_chat = None;
         if self.ingame.take().is_some() {
             self.resume_game();
+            if self.desktop {
+                cs_input::set_mouse_mode(true);
+            }
         }
     }
 
     /// Leaves the in-game Guide for the dashboard (the game keeps running in the background).
     fn leave_ingame(&mut self) {
         self.ingame = None;
+        self.leave_desktop();
     }
 
     fn resume_game(&mut self) {
@@ -1908,6 +1968,7 @@ impl App {
             Setting::Restart => self.power(cs_platform::power::restart()),
             Setting::ShutDown => self.power(cs_platform::power::shut_down()),
             Setting::ExitToDesktop => self.exit_to_desktop(),
+            Setting::Quit => self.quit(),
         }
     }
 
@@ -1977,6 +2038,7 @@ impl App {
             Setting::Restart => ("\u{E777}", "Restart", String::new(), -1),
             Setting::ShutDown => ("\u{E7E8}", "Shut down", String::new(), -1),
             Setting::ExitToDesktop => ("\u{E89F}", "Exit to desktop", String::new(), -1),
+            Setting::Quit => ("\u{E711}", "Close Win2Console", String::new(), -1),
         };
         SettingTile {
             x: rect.x,
@@ -2632,7 +2694,7 @@ impl App {
             let recent = self.recent_chats(7);
             let names: Vec<String> = recent
                 .iter()
-                .map(|peer| self.friends.iter().find(|f| f.id == *peer).map_or("Unknown".into(), |f| f.name.clone()))
+                .map(|peer| self.person(*peer).map_or_else(|| "Discord user".into(), |f| f.name))
                 .collect();
             push(
                 &mut out,
@@ -2652,9 +2714,9 @@ impl App {
                 &mut out,
                 &mut y,
                 GuideEntry {
-                    subtitle: "Gamerscore".into(),
+                    subtitle: "Gamerscore · View your profile".into(),
                     score: true,
-                    ..row("trophy", &self.gamerscore.unwrap_or(0).to_string(), GuideAction::None)
+                    ..row("", &self.gamerscore.unwrap_or(0).to_string(), GuideAction::MyProfile)
                 },
             );
             for (e, s) in &ach.games {
@@ -2740,6 +2802,31 @@ impl App {
                 );
             }
             push(&mut out, &mut y, row("\u{E8B9}", "See all captures", GuideAction::Captures));
+        } else if tab == TAB_NOTIFICATIONS {
+            if self.notices.is_empty() {
+                push(&mut out, &mut y, row("", "No new notifications", GuideAction::None));
+            }
+            for n in &self.notices {
+                let when = time_ago(n.at);
+                push(
+                    &mut out,
+                    &mut y,
+                    GuideEntry {
+                        subtitle: if n.body.is_empty() { when } else { format!("{} · {when}", n.body) },
+                        image: n.image.clone(),
+                        round: n.round && n.image.is_some(),
+                        thumb: !n.round && n.image.is_some(),
+                        ..row(n.glyph, &n.title, n.action.clone())
+                    },
+                );
+            }
+            if !self.notices.is_empty() {
+                push(
+                    &mut out,
+                    &mut y,
+                    GuideEntry { divider_above: true, ..row("\u{E894}", "Clear all", GuideAction::ClearNotices) },
+                );
+            }
         } else {
             let me = self.current.as_ref().map(|p| p.id);
             let name = self.current.as_ref().map_or_else(|| "Profile".to_string(), |p| p.name.clone());
@@ -2858,6 +2945,17 @@ impl App {
             GuideAction::Settings(c) => self.open_settings(c),
             GuideAction::SwitchProfile => self.switch_profile(),
             GuideAction::MyProfile => self.open_my_profile(),
+            GuideAction::Keyboard => {
+                // Back to the game (or the desktop) first, so the keys go to it.
+                if self.ingame.take().is_some() {
+                    self.resume_game();
+                }
+                self.open_vkeyboard();
+            }
+            GuideAction::ClearNotices => {
+                self.notices.clear();
+                self.modal = Some(ModalState::Guide { tab: TAB_NOTIFICATIONS, focus: 0 });
+            }
             GuideAction::Search => self.open_search(),
             GuideAction::AddGame => {
                 self.open_files("Choose the game's .exe", Filter::Executables, FilePurpose::AddGame)
@@ -2877,7 +2975,7 @@ impl App {
                     s.load_history(peer);
                 }
                 self.modal = Some(ModalState::Guide { tab: TAB_PARTY, focus: 0 });
-                self.guide_chat = Some(GuideChat { peer, compose: None });
+                self.guide_chat = Some(GuideChat { peer, compose: None, scroll: 0 });
             }
             GuideAction::StartParty => {
                 let online: Vec<MenuEntry> = self
@@ -3052,8 +3150,225 @@ impl App {
         None
     }
 
+    /// Records a notification for the Guide and shows it (over the game too), with the notification sound.
+    fn notify(&mut self, notice: Notice) {
+        crate::sounds::play(crate::sounds::Sound::Notify);
+        let picture = notice.image.as_ref().and_then(|p| self.images.get(p, Size::Tile));
+        let text = if notice.body.is_empty() { notice.title.clone() } else { format!("{}: {}", notice.title, notice.body) };
+        if self.running.is_some() && !cs_platform::window::own_window_is_foreground() {
+            self.notify_over_game_with(&text, picture);
+        }
+        self.toast_in_app(&text);
+        self.notices.insert(0, notice);
+        self.notices.truncate(NOTICES_MAX);
+    }
+
+    /// A notification about a person (party joins, invites), with their picture.
+    fn notify_person(&mut self, id: u64, glyph: &'static str, title: String) {
+        let image = self.person(id).and_then(|f| f.avatar);
+        let notice = Notice { glyph, title, body: String::new(), image, round: true, at: cs_core::now_unix(), action: GuideAction::None };
+        self.notify(notice);
+    }
+
+    fn open_vkeyboard(&mut self) {
+        use slint::ComponentHandle;
+        let window = match crate::ui::KeyboardWindow::new() {
+            Ok(w) => w,
+            Err(e) => return tracing::warn!("keyboard window: {e}"),
+        };
+        cs_input::set_mouse_mode(false);
+        let (sw, sh) = cs_platform::window::screen_size();
+        // Design units → physical pixels: about 85% of the dashboard's size.
+        let k = sh as f32 / 1080.0 * 0.85;
+        let (ww, wh) = ((1046.0 * k) as u32, (380.0 * k) as u32);
+        window.set_ui_scale(k / self.ui().window().scale_factor());
+        window.window().set_size(slint::PhysicalSize::new(ww, wh));
+        window.window().set_position(slint::PhysicalPosition::new((sw - ww as i32) / 2, sh - wh as i32 - sh / 20));
+        // Showing a window activates it; hand the focus straight back to whatever we're typing into.
+        let target = cs_platform::window::foreground_window();
+        if let Err(e) = window.show() {
+            return tracing::warn!("keyboard window: {e}");
+        }
+        if let Some(hwnd) = overlay_hwnd(window.window()) {
+            cs_platform::window::make_overlay(hwnd);
+        }
+        cs_platform::window::set_foreground_window(target);
+        let mut osk = Osk::new("Keyboard", "", 1);
+        osk.max_len = usize::MAX;
+        self.vkeyboard = Some((osk, window));
+        self.render_vkeyboard();
+    }
+
+    fn close_vkeyboard(&mut self) {
+        use slint::ComponentHandle;
+        if let Some((_, w)) = self.vkeyboard.take() {
+            let _ = w.hide();
+        }
+        if self.desktop {
+            cs_input::set_mouse_mode(true);
+        }
+    }
+
+    /// The virtual keyboard: keys go to the window in front as real key presses.
+    fn nav_vkeyboard(&mut self, action: NavAction) {
+        use crate::osk::KeyAction;
+        use cs_platform::input::{self, VK_BACK, VK_LEFT, VK_RETURN, VK_RIGHT};
+        use crate::sounds::{Sound, play};
+        let Some((osk, _)) = &mut self.vkeyboard else { return };
+        match action {
+            NavAction::Back => {
+                play(Sound::Back);
+                return self.close_vkeyboard();
+            }
+            NavAction::Guide => {
+                self.close_vkeyboard();
+                play(Sound::Guide);
+                return self.toggle_guide();
+            }
+            NavAction::X => input::press_key(VK_BACK),
+            NavAction::Y => input::type_text(" "),
+            NavAction::PrevTab => input::press_key(VK_LEFT),
+            NavAction::NextTab => input::press_key(VK_RIGHT),
+            NavAction::Menu => input::press_key(VK_RETURN),
+            NavAction::Accept => {
+                play(Sound::Select);
+                match osk.keys().get(osk.focus).map(|k| k.action) {
+                    Some(KeyAction::Char(c)) => {
+                        input::type_text(&c.to_string());
+                        // Keeps the keyboard's one-shot Shift behaviour; nothing is kept here.
+                        osk.type_char(c);
+                        osk.clear();
+                    }
+                    Some(KeyAction::Space) => input::type_text(" "),
+                    Some(KeyAction::Backspace) => input::press_key(VK_BACK),
+                    Some(KeyAction::CursorLeft) => input::press_key(VK_LEFT),
+                    Some(KeyAction::CursorRight) => input::press_key(VK_RIGHT),
+                    Some(KeyAction::Done) => input::press_key(VK_RETURN),
+                    Some(KeyAction::Shift | KeyAction::Symbols) => {
+                        let focus = osk.focus;
+                        osk.press(focus);
+                    }
+                    None => {}
+                }
+            }
+            _ => {
+                if action.is_direction() {
+                    play(Sound::Move);
+                }
+                osk.handle(action);
+            }
+        }
+        self.render_vkeyboard();
+    }
+
+    fn render_vkeyboard(&self) {
+        let Some((osk, w)) = &self.vkeyboard else { return };
+        w.set_keys(Rc::new(VecModel::from(key_views(osk))).into());
+        w.set_selected(osk.focus as i32);
+    }
+
+    /// Starts watching the Playnite Achievements add-on's database for new unlocks.
+    pub fn start_achievement_watch(&mut self) {
+        self.poll_achievements();
+        self.ach_timer.start(slint::TimerMode::Repeated, Duration::from_secs(15), || {
+            crate::with_app(|app| app.poll_achievements());
+        });
+    }
+
+    fn poll_achievements(&mut self) {
+        std::thread::spawn(|| {
+            let recent = cs_library::achievements::Achievements::open().map(|a| a.recent_unlocks(40));
+            post(move |app| app.achievements_polled(recent));
+        });
+    }
+
+    fn achievements_polled(&mut self, recent: Option<Vec<cs_library::achievements::RecentUnlock>>) {
+        let Some(recent) = recent else { return };
+        let key = |r: &cs_library::achievements::RecentUnlock| (r.game.clone(), r.achievement.name.clone());
+        let Some(seen) = &mut self.ach_seen else {
+            // First look: everything already unlocked counts as seen.
+            self.ach_seen = Some(recent.iter().map(key).collect());
+            return;
+        };
+        let new: Vec<_> = recent.into_iter().rev().filter(|r| seen.insert(key(r))).collect();
+        if new.is_empty() {
+            return;
+        }
+        for r in new {
+            let a = &r.achievement;
+            self.notices.insert(
+                0,
+                Notice {
+                    glyph: "trophy",
+                    title: a.name.clone(),
+                    body: format!("{} G · {}", a.gamerscore, r.game),
+                    image: a.icon.clone(),
+                    round: false,
+                    at: cs_core::now_unix(),
+                    action: GuideAction::None,
+                },
+            );
+            self.ach_queue.push_back(r);
+        }
+        self.notices.truncate(NOTICES_MAX);
+        self.refresh_gamerscore();
+        if self.ach_popup.as_ref().is_none_or(|w| !w.window().is_visible()) {
+            self.next_achievement_popup();
+        }
+    }
+
+    /// Shows the next queued achievement, Xbox style: icon, gamerscore, name and description.
+    fn next_achievement_popup(&mut self) {
+        use slint::ComponentHandle;
+        let Some(r) = self.ach_queue.pop_front() else {
+            if let Some(w) = &self.ach_popup {
+                let _ = w.hide();
+            }
+            return;
+        };
+        crate::sounds::play(crate::sounds::Sound::Achievement);
+        if self.ach_popup.is_none() {
+            match crate::ui::AchievementWindow::new() {
+                Ok(w) => self.ach_popup = Some(w),
+                Err(e) => return tracing::warn!("achievement window: {e}"),
+            }
+        }
+        let icon = r.achievement.icon.as_ref().and_then(|p| self.images.get(p, Size::Tile));
+        let Some(w) = &self.ach_popup else { return };
+        w.set_has_badge(icon.is_some());
+        w.set_badge(icon.unwrap_or_default());
+        w.set_score(r.achievement.gamerscore.to_string().into());
+        w.set_name(r.achievement.name.clone().into());
+        w.set_description(r.achievement.description.clone().into());
+        let (sw, sh) = cs_platform::window::screen_size();
+        let (ww, wh) = ((sh as f32 * 0.66) as u32, (sh as f32 * 0.1) as u32);
+        w.window().set_size(slint::PhysicalSize::new(ww, wh));
+        w.window().set_position(slint::PhysicalPosition::new((sw - ww as i32) / 2, sh - wh as i32 - sh / 12));
+        if let Err(e) = w.show() {
+            return tracing::warn!("achievement window: {e}");
+        }
+        if let Some(hwnd) = overlay_hwnd(w.window()) {
+            cs_platform::window::make_overlay(hwnd);
+            cs_platform::window::round_window(hwnd, ww as i32, wh as i32, wh as i32 / 2);
+        }
+        self.ach_popup_timer.start(slint::TimerMode::SingleShot, Duration::from_secs(6), || {
+            crate::with_app(|app| app.next_achievement_popup());
+        });
+    }
+
+    /// A friend, or someone we have messages from, by Discord id.
+    fn person(&self, id: u64) -> Option<Friend> {
+        let friend = self.friends.iter().find(|f| f.id == id).cloned();
+        match (friend, self.users.get(&id)) {
+            (Some(f), Some(u)) if f.name == "Discord user" => Some(Friend { name: u.name.clone(), ..f }),
+            (Some(f), _) => Some(f),
+            (None, u) => u.cloned(),
+        }
+    }
+
     fn stop_social(&mut self) {
         self.social = None;
+        self.users.clear();
         self.social_timer.stop();
         self.social_status = social::Status::NotLinked;
         self.friends.clear();
@@ -3085,6 +3400,13 @@ impl App {
                 self.social_status = status;
             }
             social::Event::Friends(mut friends) => {
+                // Discord sometimes lists a friend before it has their details.
+                for f in friends.iter_mut().filter(|f| f.name.is_empty()) {
+                    f.name = self.users.get(&f.id).map_or_else(|| "Discord user".into(), |u| u.name.clone());
+                    if f.avatar.is_none() {
+                        f.avatar = self.users.get(&f.id).and_then(|u| u.avatar.clone());
+                    }
+                }
                 friends.sort_by(|a, b| {
                     a.presence.cmp(&b.presence).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
                 });
@@ -3094,9 +3416,20 @@ impl App {
                 let viewing = self.guide_chat.as_ref().is_some_and(|c| c.peer == peer)
                     && matches!(self.modal, Some(ModalState::Guide { .. }));
                 if !message.from_me && !viewing && cs_core::now_unix() - message.at < 60 {
-                    let name = self.friends.iter().find(|f| f.id == peer).map_or("Message", |f| f.name.as_str());
-                    let text = format!("{name}: {}", message.text);
-                    self.toast(text);
+                    let who = self.person(peer);
+                    let party = self.party.as_ref().is_some_and(|p| p.chat == peer);
+                    let title = if party { "Party chat".into() } else { who.as_ref().map_or("Message".into(), |f| f.name.clone()) };
+                    let body = crate::gifs::find_link(&message.text)
+                        .map_or_else(|| message.text.clone(), |(_, rest)| if rest.is_empty() { "Sent a GIF".into() } else { rest });
+                    self.notify(Notice {
+                        glyph: "\u{E8BD}",
+                        title,
+                        body,
+                        image: who.and_then(|f| f.avatar),
+                        round: true,
+                        at: message.at,
+                        action: GuideAction::OpenChat(peer),
+                    });
                 }
                 let chat = self.chats.entry(peer).or_default();
                 if !chat.iter().any(|m| m.id == message.id) {
@@ -3113,32 +3446,46 @@ impl App {
                     party.iter().flat_map(|p| &p.members).map(|m| (m.id, m.name.clone())).collect();
                 for (id, name) in &after {
                     if !before.iter().any(|(b, _)| b == id) {
-                        self.toast(format!("{name} joined the party"));
+                        self.notify_person(*id, "\u{E716}", format!("{name} joined the party"));
                     }
                 }
                 for (id, name) in &before {
                     if party.is_some() && !after.iter().any(|(a, _)| a == id) {
-                        self.toast(format!("{name} left the party"));
+                        self.notify_person(*id, "\u{E716}", format!("{name} left the party"));
                     }
                 }
                 self.party = party;
             }
             social::Event::PartyInvite { from, name } => {
-                self.toast(format!("{name} invited you to a party. Open the Guide to join."));
+                self.notify_person(from, "\u{E716}", format!("{name} invited you to a party. Open the Guide to join."));
                 self.party_invite = Some((from, name));
             }
             social::Event::Requests(requests) => {
-                let new: Vec<String> = requests
-                    .iter()
-                    .filter(|r| !self.requests.iter().any(|o| o.id == r.id))
-                    .map(|r| r.name.clone())
-                    .collect();
-                for name in new {
-                    self.toast(format!("{name} sent you a friend request"));
+                let new: Vec<Friend> =
+                    requests.iter().filter(|r| !self.requests.iter().any(|o| o.id == r.id)).cloned().collect();
+                for r in new {
+                    self.notify(Notice {
+                        glyph: "\u{E8FA}",
+                        title: format!("{} sent you a friend request", r.name),
+                        body: String::new(),
+                        image: r.avatar.clone(),
+                        round: true,
+                        at: cs_core::now_unix(),
+                        action: GuideAction::FriendRequest(r.id),
+                    });
                 }
                 self.requests = requests;
             }
             social::Event::Notice(text) => self.toast(text),
+            social::Event::User(user) => {
+                if !user.name.is_empty() {
+                    for f in self.friends.iter_mut().filter(|f| f.id == user.id && f.name == "Discord user") {
+                        f.name = user.name.clone();
+                        f.avatar = f.avatar.take().or_else(|| user.avatar.clone());
+                    }
+                    self.users.insert(user.id, user);
+                }
+            }
             social::Event::Audio(info) => {
                 self.discord_audio = Some(info);
                 if let Some(ModalState::Audio { focus, .. }) = self.modal {
@@ -3159,9 +3506,13 @@ impl App {
             self.osk_outcome(outcome);
             return;
         }
+        let count = self.chats.get(&chat.peer).map_or(0, Vec::len);
         match action {
             NavAction::Accept => chat.compose = Some(Osk::new("Message", "", 500)),
             NavAction::Back => self.guide_chat = None,
+            NavAction::Up => chat.scroll = (chat.scroll + 1).min(count.saturating_sub(1)),
+            NavAction::Down => chat.scroll = chat.scroll.saturating_sub(1),
+            NavAction::X => chat.scroll = 0,
             NavAction::PrevTab | NavAction::NextTab => {
                 self.guide_chat = None;
                 self.nav_modal(action);
@@ -3371,7 +3722,28 @@ impl App {
         }
     }
 
+    /// Goes to the desktop but keeps running: the controller moves the pointer and the Guide button brings the
+    /// Guide back.
     fn exit_to_desktop(&mut self) {
+        self.modal = None;
+        self.desktop = true;
+        cs_input::set_mouse_mode(true);
+        cs_platform::window::minimize_own_window();
+        self.notify_over_game_with(
+            "Left stick moves the pointer, A clicks, X right-clicks, right stick scrolls. Xbox button: Guide.",
+            None,
+        );
+    }
+
+    /// Back from the desktop to Win2Console's own screens.
+    fn leave_desktop(&mut self) {
+        if self.desktop {
+            self.desktop = false;
+            cs_input::set_mouse_mode(false);
+        }
+    }
+
+    fn quit(&mut self) {
         self.stop_tracking();
         let _ = slint::quit_event_loop();
     }
@@ -3724,6 +4096,7 @@ impl App {
     }
 
     fn launch(&mut self, game: &Game) {
+        crate::sounds::play(crate::sounds::Sound::Launch);
         let wanted = (game.provider == Provider::Steam)
             .then(|| self.current.as_ref()?.accounts.iter().find(|a| a.service == Service::Steam).cloned())
             .flatten();
@@ -4295,6 +4668,11 @@ impl App {
 
     /// Shows `message` in the always-on-top notification window at the bottom centre of the screen.
     fn notify_over_game(&mut self, message: &str) {
+        self.notify_over_game_with(message, None);
+    }
+
+    /// A notification over the game, with a picture (a friend's) in place of the bell when there is one.
+    fn notify_over_game_with(&mut self, message: &str, picture: Option<Image>) {
         use slint::ComponentHandle;
         if self.notify.is_none() {
             match crate::ui::NotifyWindow::new() {
@@ -4306,6 +4684,8 @@ impl App {
         let accent = self.current.as_ref().map_or(cs_core::model::DEFAULT_ACCENT, |p| p.accent.as_str());
         w.set_accent(parse_color(accent));
         w.set_message(message.into());
+        w.set_has_picture(picture.is_some());
+        w.set_picture(picture.unwrap_or_default());
         let (sw, sh) = cs_platform::window::screen_size();
         let (ww, wh) = ((sw as f32 * 0.3) as u32, (sh as f32 * 0.085) as u32);
         w.window().set_size(slint::PhysicalSize::new(ww, wh));
@@ -4314,13 +4694,7 @@ impl App {
             return tracing::warn!("notification window: {e}");
         }
         // Never take focus from the game or catch its clicks.
-        use slint::winit_030::WinitWindowAccessor;
-        use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let hwnd = w.window().with_winit_window(|ww| match ww.window_handle().map(|h| h.as_raw()) {
-            Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
-            _ => None,
-        });
-        if let Some(hwnd) = hwnd.flatten() {
+        if let Some(hwnd) = overlay_hwnd(w.window()) {
             cs_platform::window::make_overlay(hwnd);
         }
         self.notify_timer.start(slint::TimerMode::SingleShot, Duration::from_secs(4), || {
@@ -4813,6 +5187,11 @@ impl App {
         if self.running.is_some() && !cs_platform::window::own_window_is_foreground() {
             self.notify_over_game(&message);
         }
+        self.toast_in_app(&message);
+    }
+
+    /// The toast at the bottom of Win2Console's own window.
+    fn toast_in_app(&mut self, message: &str) {
         self.ui().set_toast(message.into());
         let weak = self.ui.clone();
         self.toast_timer.start(slint::TimerMode::SingleShot, TOAST_TIME, move || {
@@ -5265,7 +5644,7 @@ impl App {
                     .recent_chats(7)
                     .into_iter()
                     .map(|peer| {
-                        let f = self.friends.iter().find(|f| f.id == peer).cloned();
+                        let f = self.person(peer);
                         let last = self
                             .chats
                             .get(&peer)
@@ -5274,7 +5653,7 @@ impl App {
                         let image =
                             f.as_ref().and_then(|f| f.avatar.clone()).and_then(|p| self.images.get(&p, Size::Tile));
                         GuideItem {
-                            label: f.as_ref().map_or("Unknown".into(), |f| f.name.clone()).into(),
+                            label: f.as_ref().map_or("Discord user".into(), |f| f.name.clone()).into(),
                             subtitle: last.unwrap_or_default().into(),
                             has_image: image.is_some(),
                             image: image.unwrap_or_default(),
@@ -5290,7 +5669,7 @@ impl App {
                 let (id, focus, tab, guide_focus) = (*id, *focus, *tab, *guide_focus);
                 ui.set_modal(Modal::Friend);
                 self.render_guide(ui, tab, guide_focus);
-                let f = self.friends.iter().find(|f| f.id == id).cloned();
+                let f = self.person(id);
                 let picture = f.as_ref().and_then(|f| f.avatar.clone()).and_then(|p| self.images.get(&p, Size::Tile));
                 ui.set_friend_name(f.as_ref().map(|f| f.name.clone()).unwrap_or_default().into());
                 ui.set_friend_status(f.as_ref().map(|f| f.presence.label().to_string()).unwrap_or_default().into());
@@ -5424,6 +5803,10 @@ impl App {
     }
 
     pub fn set_window_focused(&mut self, focused: bool) {
+        // Switching back to Win2Console by hand ends desktop mode.
+        if focused && self.desktop && self.ingame.is_none() {
+            self.leave_desktop();
+        }
         if self.window_focused != focused {
             self.window_focused = focused;
             self.render();
@@ -5437,18 +5820,20 @@ impl App {
             return;
         };
         ui.set_chat_mode(true);
-        let friend = self.friends.iter().find(|f| f.id == chat.peer);
+        let friend = self.person(chat.peer);
         let party_chat = self.party.as_ref().is_some_and(|p| p.chat == chat.peer);
-        let title =
-            friend.map_or_else(|| if party_chat { "Party chat".into() } else { "Chat".into() }, |f| f.name.clone());
+        let title = friend
+            .as_ref()
+            .map_or_else(|| if party_chat { "Party chat".into() } else { "Chat".into() }, |f| f.name.clone());
         ui.set_chat_title(title.into());
-        ui.set_chat_subtitle(friend.map_or(String::new(), |f| f.status_line()).into());
+        ui.set_chat_subtitle(friend.as_ref().map_or(String::new(), |f| f.status_line()).into());
         let lines = self
             .chats
             .get(&chat.peer)
             .map(|msgs| {
-                let start = msgs.len().saturating_sub(12);
-                msgs[start..]
+                let end = msgs.len().saturating_sub(chat.scroll);
+                let start = end.saturating_sub(12);
+                msgs[start..end]
                     .iter()
                     .map(|m| {
                         let mut line = ChatLine {
@@ -5496,6 +5881,7 @@ impl App {
             Some(ModalState::Guide { .. }) => {
                 return match &self.guide_chat {
                     Some(GuideChat { compose: Some(_), .. }) => vec![("≡", "Send"), ("B", "Cancel")],
+                    Some(c) if c.scroll > 0 => vec![("A", "Write a message"), ("X", "Latest"), ("B", "Back")],
                     Some(_) => vec![("A", "Write a message"), ("B", "Back")],
                     None => vec![("LB", "Prev tab"), ("RB", "Next tab"), ("B", "Close")],
                 };
@@ -5547,19 +5933,12 @@ impl App {
                 Tile { title: s.label().into(), glyph: s.glyph().into(), style: STYLE_SOLID, caption, ..tile_at(rect) }
             }
             HeroItem::Library => {
-                // Like the Xbox tile: icon + label, with a strip of the most recent game's art.
-                let art = match self.hero.first().map(|t| t.item.clone()) {
-                    Some(HeroItem::Game(e)) => e.game.media.cover.and_then(|p| self.images.get(&p, Size::Tile)),
-                    _ => None,
-                };
+                // Just the icon and label (no game art).
                 Tile {
                     title: "My games & apps".into(),
                     glyph: "\u{E8F1}".into(),
                     style: STYLE_DARK,
                     caption: true,
-                    strip: true,
-                    has_image: art.is_some(),
-                    image: art.unwrap_or_default(),
                     ..tile_at(rect)
                 }
             }
@@ -5633,6 +6012,18 @@ fn presence_code(p: Presence) -> i32 {
 }
 
 /// "now", "5m", "3h", "2d".
+/// The native handle of one of our secondary windows (notifications, pop-ups), once it exists.
+fn overlay_hwnd(window: &slint::Window) -> Option<isize> {
+    use slint::winit_030::WinitWindowAccessor;
+    use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    window
+        .with_winit_window(|w| match w.window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
+            _ => None,
+        })
+        .flatten()
+}
+
 fn time_ago(at: i64) -> String {
     let secs = (cs_core::now_unix() - at).max(0);
     match secs {

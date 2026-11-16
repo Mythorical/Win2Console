@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::f32::consts::TAU;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Sound {
@@ -14,10 +15,25 @@ pub enum Sound {
     Back,
     Guide,
     Startup,
+    SignIn,
+    Launch,
+    Achievement,
+    Notify,
 }
 
 const RATE: u32 = 44_100;
-const NAMES: [&str; 5] = ["move", "select", "back", "guide", "startup"];
+const NAMES: [&str; 9] = ["move", "select", "back", "guide", "startup", "signin", "launch", "achievement", "notification"];
+const ALL: [Sound; 9] = [
+    Sound::Move,
+    Sound::Select,
+    Sound::Back,
+    Sound::Guide,
+    Sound::Startup,
+    Sound::SignIn,
+    Sound::Launch,
+    Sound::Achievement,
+    Sound::Notify,
+];
 
 fn sounds_dir() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("Win2Console").join("sounds"))
@@ -48,6 +64,10 @@ fn synth(sound: Sound) -> Vec<f32> {
         Sound::Move => 0.12,
         Sound::Guide => 0.6,
         Sound::Startup => 3.2,
+        Sound::SignIn => 1.1,
+        Sound::Launch => 1.5,
+        Sound::Achievement => 1.8,
+        Sound::Notify => 0.8,
         _ => 0.35,
     };
     let mut b = vec![0.0; (secs * RATE as f32) as usize];
@@ -82,6 +102,36 @@ fn synth(sound: Sound) -> Vec<f32> {
                 note(&mut b, 1.0 + i as f32 * 0.06, hz, 2.1, 0.11, 2.2);
             }
             note(&mut b, 1.0, 130.8, 2.1, 0.2, 1.6);
+        }
+        // Sign-in: a warm, quick rising arpeggio.
+        Sound::SignIn => {
+            for (i, hz) in [523.3, 659.3, 784.0, 1046.5].into_iter().enumerate() {
+                note(&mut b, i as f32 * 0.07, hz, 0.9, 0.15, 5.0);
+            }
+        }
+        // Launch: a soft upward sweep into an open fifth.
+        Sound::Launch => {
+            for i in 0..(0.35 * RATE as f32) as usize {
+                let t = i as f32 / RATE as f32;
+                let env = (t / 0.35).powi(2) * 0.08;
+                b[i] += (TAU * (300.0 * t + 600.0 * t * t / 0.7)).sin() * env;
+            }
+            for hz in [392.0, 587.3, 784.0] {
+                note(&mut b, 0.33, hz, 1.1, 0.15, 3.5);
+            }
+        }
+        // Achievement: a bright chord hit, then a high chime.
+        Sound::Achievement => {
+            for hz in [987.8, 1318.5, 1661.2] {
+                note(&mut b, 0.0, hz, 0.8, 0.12, 6.0);
+            }
+            note(&mut b, 0.16, 1975.5, 1.4, 0.14, 3.0);
+            note(&mut b, 0.16, 493.9, 1.2, 0.12, 3.0);
+        }
+        // Notification: a gentle two-note ding.
+        Sound::Notify => {
+            note(&mut b, 0.0, 880.0, 0.6, 0.15, 8.0);
+            note(&mut b, 0.09, 1318.5, 0.7, 0.15, 6.0);
         }
     }
     // Startup gets a bigger room.
@@ -197,6 +247,10 @@ UI sounds (.wav only):
   back.wav      pressing B / going back
   guide.wav     opening the Guide
   startup.wav   the built-in startup animation
+  signin.wav    signing in to a profile
+  launch.wav    starting a game
+  achievement.wav     unlocking an achievement
+  notification.wav    messages, friend requests and other notifications
 
 Background music (.mp3 or .wav, loops):
   ambient.mp3   or   ambient.wav
@@ -207,14 +261,43 @@ The startup video isn't in here: choose it in Settings > System > Startup animat
     let _ = std::fs::write(dir.join("README.txt"), text.replace('\n', "\r\n"));
 }
 
+thread_local! {
+    /// A mixer, so sounds overlap instead of cutting each other off (which clicks).
+    static OUTPUT: Option<(rodio::OutputStream, rodio::OutputStreamHandle)> = rodio::OutputStream::try_default()
+        .inspect_err(|e| tracing::warn!("sound output: {e}"))
+        .ok();
+    static LAST_MOVE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Fast scrolling plays at most one "move" sound this often (more just piles up into noise).
+const MOVE_GAP: Duration = Duration::from_millis(45);
+
 pub fn play(sound: Sound) {
-    static CACHE: OnceLock<[Vec<u8>; 5]> = OnceLock::new();
+    static CACHE: OnceLock<[Vec<u8>; 9]> = OnceLock::new();
     let all = CACHE.get_or_init(|| {
         let custom = |i: usize| sounds_dir().and_then(|d| std::fs::read(d.join(format!("{}.wav", NAMES[i]))).ok());
-        [Sound::Move, Sound::Select, Sound::Back, Sound::Guide, Sound::Startup]
-            .map(|s| custom(s as usize).unwrap_or_else(|| wav(&synth(s), RATE)))
+        ALL.map(|s| custom(s as usize).unwrap_or_else(|| wav(&synth(s), RATE)))
     });
-    cs_platform::sound::play_wav(&all[sound as usize]);
+    if matches!(sound, Sound::Move) {
+        let now = Instant::now();
+        if LAST_MOVE.get().is_some_and(|t| now - t < MOVE_GAP) {
+            return;
+        }
+        LAST_MOVE.set(Some(now));
+    }
+    let bytes: &'static [u8] = &all[sound as usize];
+    OUTPUT.with(|out| match out {
+        Some((_, handle)) => {
+            use rodio::Source;
+            match rodio::Decoder::new(std::io::Cursor::new(bytes)) {
+                Ok(source) => {
+                    let _ = handle.play_raw(source.convert_samples());
+                }
+                Err(e) => tracing::warn!("sound {}: {e}", NAMES[sound as usize]),
+            }
+        }
+        None => cs_platform::sound::play_wav(bytes),
+    });
 }
 
 thread_local! {

@@ -3,7 +3,7 @@
 
 import { AboutSlint } from "std-widgets.slint";
 import { Theme, Icons } from "theme.slint";
-import { Tile, ProfileItem, Hint, Avatar, ArtTile, HintPill, Wallpaper, Icon, ChatStatus, GamerscoreIcon } from "components.slint";
+import { Tile, ProfileItem, Hint, Avatar, ArtTile, HintPill, Wallpaper, Icon, ChatStatus, GamerscoreIcon, TrophyIcon, ButtonGlyph } from "components.slint";
 import { HomeScreen } from "home.slint";
 import { LibraryScreen, SidebarItem } from "library.slint";
 import { SettingsScreen, SettingTile } from "settings.slint";
@@ -281,6 +281,8 @@ export component AppWindow inherits Window {
             if root.gamerscore != "": HorizontalLayout {
                 x: 180 * Theme.u;
                 y: 112 * Theme.u;
+                // Without a height the layout fills the screen and centres the score far down.
+                height: 26 * Theme.u;
                 spacing: 6 * Theme.u;
                 GamerscoreIcon {
                     size: 18px * Theme.scale;
@@ -778,6 +780,9 @@ export component NotifyWindow inherits Window {
     background: #1F1F1F;
     in property <string> message;
     in property <color> accent: #107C10;
+    // A friend's picture replaces the bell.
+    in property <image> picture;
+    in property <bool> has-picture;
     Rectangle { x: 0; width: root.height * 0.07; background: root.accent; }
     Rectangle {
         x: root.height * 0.24;
@@ -786,7 +791,9 @@ export component NotifyWindow inherits Window {
         height: self.width;
         border-radius: self.width / 2;
         background: root.accent;
-        Text {
+        clip: true;
+        if root.has-picture: Image { width: 100%; height: 100%; source: root.picture; image-fit: cover; }
+        if !root.has-picture: Text {
             text: "\u{E7E7}";
             font-family: "Segoe MDL2 Assets";
             font-size: root.height * 0.24;
@@ -804,5 +811,108 @@ export component NotifyWindow inherits Window {
         vertical-alignment: center;
         wrap: word-wrap;
         overflow: elide;
+    }
+}
+
+// Achievement unlocked, after the Xbox One pop-up: a green pill with the achievement's icon in the circle,
+// then the gamerscore, name and description. Rust clips the window to the pill shape.
+export component AchievementWindow inherits Window {
+    title: "Win2Console achievement";
+    no-frame: true;
+    always-on-top: true;
+    background: #107C10;
+    in property <image> badge;
+    in property <bool> has-badge;
+    in property <string> score;
+    in property <string> name;
+    in property <string> description;
+    property <length> d: root.height;
+    Rectangle {
+        x: 0;
+        width: d;
+        height: d;
+        border-radius: d / 2;
+        background: #5DC21E;
+        Rectangle {
+            width: d * 0.74;
+            height: d * 0.74;
+            border-radius: self.width / 2;
+            clip: true;
+            if root.has-badge: Image { width: 100%; height: 100%; source: root.badge; image-fit: cover; }
+        }
+        if !root.has-badge: TrophyIcon { size: d * 0.5; width: self.size; height: self.size; tint: #FFFFFF; }
+    }
+    HorizontalLayout {
+        x: d * 1.18;
+        y: d * 0.14;
+        width: root.width - self.x - d * 0.5;
+        height: d * 0.4;
+        spacing: d * 0.09;
+        GamerscoreIcon { size: d * 0.3; y: (parent.height - self.height) / 2; }
+        Text {
+            text: root.score + " - " + root.name;
+            font-family: "Segoe UI";
+            font-size: d * 0.27;
+            font-weight: 600;
+            color: #FFFFFF;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    Text {
+        x: d * 1.18;
+        y: d * 0.56;
+        width: root.width - self.x - d * 0.5;
+        text: root.description;
+        font-family: "Segoe UI";
+        font-size: d * 0.19;
+        color: #FFFFFFD8;
+        overflow: elide;
+    }
+}
+
+// The virtual keyboard from the Guide: types into whatever game or app is in front.
+export component KeyboardWindow inherits Window {
+    title: "Win2Console keyboard";
+    no-frame: true;
+    always-on-top: true;
+    background: #1B1B1B;
+    in property <float> ui-scale: 1;
+    in property <[KeyView]> keys;
+    in property <int> selected;
+    init => { Theme.scale = root.ui-scale; }
+    changed ui-scale => { Theme.scale = root.ui-scale; }
+    Text {
+        x: 24 * Theme.u;
+        y: 16 * Theme.u;
+        text: "Keyboard";
+        font-family: Theme.ui-font;
+        font-size: 26px * Theme.scale;
+        font-weight: 600;
+        color: Theme.text;
+    }
+    HorizontalLayout {
+        x: root.width - self.width - 24 * Theme.u;
+        y: 14 * Theme.u;
+        width: self.preferred-width;
+        height: 36 * Theme.u;
+        spacing: 22 * Theme.u;
+        for h in [{ button: "B", label: "Close" }, { button: "X", label: "Backspace" }, { button: "Y", label: "Space" }, { button: "≡", label: "Enter" }]: HorizontalLayout {
+            spacing: 8 * Theme.u;
+            ButtonGlyph { button: h.button; y: (parent.height - self.height) / 2; }
+            Text {
+                text: h.label;
+                font-family: Theme.ui-font;
+                font-size: 21px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+        }
+    }
+    Keyboard {
+        x: (root.width - self.width) / 2;
+        y: 64 * Theme.u;
+        keys: root.keys;
+        selected: root.selected;
     }
 }

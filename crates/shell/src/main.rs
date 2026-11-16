@@ -71,6 +71,16 @@ fn run(paths: cs_core::AppPaths) -> Result<(), Box<dyn std::error::Error>> {
 
     // Controller thread → UI thread.
     cs_input::spawn(|event| {
+        // Mouse mode (on the desktop) drives the pointer straight from the controller thread.
+        if let cs_input::InputEvent::Mouse(m) = event {
+            use cs_platform::input;
+            match m {
+                cs_input::MouseEvent::Move(dx, dy) => input::mouse_move(dx, dy),
+                cs_input::MouseEvent::Button { right, down } => input::mouse_button(right, down),
+                cs_input::MouseEvent::Wheel(v, h) => input::wheel(v, h),
+            }
+            return;
+        }
         app::post(move |app| match event {
             cs_input::InputEvent::Nav(action) => {
                 // Using the controller hides the mouse pointer until the mouse moves again.
@@ -78,6 +88,7 @@ fn run(paths: cs_core::AppPaths) -> Result<(), Box<dyn std::error::Error>> {
                 app.on_nav(action);
             }
             cs_input::InputEvent::Controllers(list) => app.on_controllers(list),
+            cs_input::InputEvent::Mouse(_) => {}
         });
     });
 
@@ -122,6 +133,7 @@ fn run(paths: cs_core::AppPaths) -> Result<(), Box<dyn std::error::Error>> {
         app.startup_update_check();
         app.refresh_start_with_windows();
         crate::sounds::write_index();
+        app.start_achievement_watch();
         app.start_splash();
     });
 

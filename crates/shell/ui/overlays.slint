@@ -22,7 +22,7 @@ export struct GuideItem {
     more: string,
     // Your picture instead of the icon (with `others` small and overlapping under the label).
     profile-row: bool,
-    // The label is a gamerscore: the gamerscore mark goes before it.
+    // The label is a gamerscore: a trophy and the gamerscore mark go before it.
     score: bool,
 }
 
@@ -137,9 +137,18 @@ export component GuidePanel inherits Rectangle {
         drop-shadow-blur: 30px * Theme.scale;
         drop-shadow-color: #000000A0;
 
-        // Tabs
+        // Tabs: six show at once; moving past them snaps the row along by one tab.
+        property <length> tab-offset: max(0, min(root.tab - 5, root.tabs.length - 6)) * 80 * Theme.u;
+        tab-strip := Rectangle {
+        // Exactly six tabs wide; the rest slide in one tab at a time.
+        x: 26 * Theme.u;
+        y: 0;
+        width: 488 * Theme.u;
+        height: 124 * Theme.u;
+        clip: true;
         for t[i] in tabs: Rectangle {
-            x: (30 + i * 80) * Theme.u;
+            x: (4 + i * 80) * Theme.u - panel.tab-offset;
+            animate x { duration: Theme.anim; easing: ease-out; }
             y: 28 * Theme.u;
             width: 76 * Theme.u;
             height: 76 * Theme.u;
@@ -154,6 +163,7 @@ export component GuidePanel inherits Rectangle {
                 background: Theme.accent;
             }
             TouchArea { clicked => { root.tab-clicked(i); } }
+        }
         }
 
         // Scrolling list area between the tabs and the bottom buttons (plain clip; no rounded corners).
@@ -238,6 +248,13 @@ export component GuidePanel inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8 * Theme.u;
                     alignment: start;
+                    // Trophy, then the gamerscore mark, both sized to the text.
+                    if it.score: TrophyIcon {
+                        size: 26px * Theme.scale;
+                        width: self.size;
+                        height: self.size;
+                        y: (parent.height - self.height) / 2;
+                    }
                     if it.score: GamerscoreIcon {
                         size: 22px * Theme.scale;
                         y: (parent.height - self.height) / 2;
@@ -328,11 +345,14 @@ export component ChatPanel inherits Rectangle {
         width: parent.width;
         height: root.height - 244 * Theme.u;
         clip: true;
+        // Sized to its messages and pinned to the bottom, so the newest is always just above the message
+        // box; older ones run off the top.
         VerticalLayout {
+            y: parent.height - self.height;
+            height: self.preferred-height;
             padding-left: 24 * Theme.u;
             padding-right: 24 * Theme.u;
             spacing: 10 * Theme.u;
-            alignment: end;
             for line in root.lines: HorizontalLayout {
                 alignment: line.mine ? end : start;
                 Rectangle {
