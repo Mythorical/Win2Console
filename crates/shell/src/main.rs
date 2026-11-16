@@ -13,6 +13,7 @@ mod osk;
 mod social;
 mod sounds;
 mod splash;
+mod updater;
 mod video;
 mod weblogin;
 
@@ -38,6 +39,8 @@ pub fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
 }
 
 fn main() {
+    // Velopack runs install/update steps through the app itself; this returns straight away otherwise.
+    updater::run_hooks();
     let paths = match cs_core::AppPaths::discover() {
         Ok(p) => p,
         Err(e) => {
@@ -112,6 +115,7 @@ fn run(paths: cs_core::AppPaths) -> Result<(), Box<dyn std::error::Error>> {
         app.render();
         app.apply_branding();
         app.load_feeds();
+        app.startup_update_check();
         app.start_splash();
     });
 

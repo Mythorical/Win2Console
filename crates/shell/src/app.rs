@@ -28,6 +28,7 @@ use crate::ui::{
     AchievementRow, AppWindow, AudioRow, ChatLine, GameButton, GuideItem, GuideTab, Hint, KeyView, ListItem, MenuItem,
     Modal, PickerItem, ProfileItem, Screen, SettingTile, SidebarItem, Tile,
 };
+use crate::updater;
 use crate::weblogin::{FocusInfo, Pkce, WebEvent, WebLogin};
 
 /// Ignore mouse hover for this long after controller/keyboard input, so tiles moving under a resting
@@ -196,6 +197,7 @@ enum Setting {
     AppIcon,
     StartupAnimation,
     MenuSize,
+    Updates,
     ShowHidden,
     Rescan,
     AddGame,
@@ -225,6 +227,7 @@ fn settings_for(category: usize) -> &'static [Setting] {
             Setting::AppTitle,
             Setting::AppIcon,
             Setting::StartupAnimation,
+            Setting::Updates,
             Setting::StartWithWindows,
             Setting::About,
             Setting::ExitToDesktop,
@@ -258,6 +261,9 @@ enum MenuAction {
     Details(String),
     ChooseAppIcon,
     ResetAppIcon,
+    CheckUpdates,
+    InstallUpdate,
+    ToggleAutoUpdate,
     AnswerRequest(u64, bool),
     UiScale(u32),
     Startup(StartupChoice),
@@ -738,6 +744,8 @@ pub struct App {
     captures: Vec<PathBuf>,
     captures_at: Option<Instant>,
     cursor_hidden: bool,
+    update_state: crate::updater::State,
+    update_info: Option<velopack::UpdateInfo>,
     /// Notification pop-up shown over games.
     notify: Option<crate::ui::NotifyWindow>,
     notify_timer: Rc<slint::Timer>,
@@ -853,6 +861,8 @@ impl App {
             captures: Vec::new(),
             captures_at: None,
             cursor_hidden: false,
+            update_state: crate::updater::State::Idle,
+            update_info: None,
             notify: None,
             notify_timer: Rc::new(slint::Timer::default()),
             requests: Vec::new(),
@@ -1745,6 +1755,28 @@ impl App {
                 let current = self.config.app_title.clone().unwrap_or_default();
                 self.open_keyboard("App name (leave empty for Win2Console)", &current, 40, OskPurpose::AppTitle);
             }
+            Setting::Updates => {
+                let mut entries = vec![entry("\u{E72C}", "Check for updates", MenuAction::CheckUpdates)];
+                if matches!(self.update_state, updater::State::Available(_) | updater::State::Ready(_)) {
+                    entries.push(entry(
+                        "\u{E896}",
+                        "Install update now (restarts Win2Console)",
+                        MenuAction::InstallUpdate,
+                    ));
+                }
+                let auto = if self.config.manual_updates { "Automatic updates: Off" } else { "Automatic updates: On" };
+                entries.push(entry("\u{E895}", auto, MenuAction::ToggleAutoUpdate));
+                let message = format!(
+                    "Win2Console {}. {}",
+                    env!("CARGO_PKG_VERSION"),
+                    if self.config.manual_updates {
+                        "Updates are only installed when you choose to."
+                    } else {
+                        "Updates download by themselves and install when you close Win2Console."
+                    }
+                );
+                self.open_menu("Updates", &message, entries);
+            }
             Setting::MenuSize => {
                 let current = self.config.ui_scale.unwrap_or(100);
                 let entries = [80, 90, 100, 110, 125]
@@ -1851,6 +1883,7 @@ impl App {
                 ("\u{E8AC}", "App name", self.config.app_title.clone().unwrap_or_else(|| "Win2Console".into()), -1)
             }
             Setting::AppIcon => ("\u{E91B}", "App icon", String::new(), -1),
+            Setting::Updates => ("\u{E895}", "Updates", self.update_state.label(), -1),
             Setting::MenuSize => ("\u{E740}", "Menu size", format!("{}%", self.config.ui_scale.unwrap_or(100)), -1),
             Setting::StartupAnimation => (
                 "\u{E714}",
@@ -3171,6 +3204,22 @@ impl App {
                 self.requests.retain(|r| r.id != id);
                 self.toast(if accept { "Friend added" } else { "Request declined" });
             }
+            MenuAction::CheckUpdates => self.check_updates(!self.config.manual_updates, true),
+            MenuAction::ToggleAutoUpdate => {
+                self.config.manual_updates = !self.config.manual_updates;
+                self.save_config();
+                self.toast(if self.config.manual_updates { "Automatic updates off" } else { "Automatic updates on" });
+            }
+            MenuAction::InstallUpdate => {
+                let Some(info) = self.update_info.clone() else { return };
+                self.update_state = updater::State::Downloading(info.TargetFullRelease.Version.clone());
+                self.toast("Installing the update. Win2Console will restart…");
+                std::thread::spawn(move || {
+                    if let Err(e) = updater::install_now(&info) {
+                        post(move |app| app.toast(format!("Couldn't install the update: {e}")));
+                    }
+                });
+            }
             MenuAction::UiScale(p) => {
                 self.config.ui_scale = (p != 100).then_some(p);
                 self.save_config();
@@ -4020,6 +4069,40 @@ impl App {
                 if let Some(w) = &app.notify {
                     let _ = w.hide();
                 }
+            });
+        });
+    }
+
+    /// At startup: automatic mode downloads any update (installed when Win2Console closes); manual mode
+    /// only says one is available.
+    pub fn startup_update_check(&mut self) {
+        self.check_updates(!self.config.manual_updates, false);
+    }
+
+    fn check_updates(&mut self, download: bool, announce_result: bool) {
+        if matches!(self.update_state, updater::State::Checking | updater::State::Downloading(_)) {
+            return;
+        }
+        self.update_state = updater::State::Checking;
+        std::thread::spawn(move || {
+            let (state, info) = updater::check(download);
+            post(move |app| {
+                match &state {
+                    updater::State::Available(v) => {
+                        app.toast(format!("Win2Console {v} is available. Install it from Settings → System → Updates."))
+                    }
+                    updater::State::Ready(v) => {
+                        app.toast(format!("Win2Console {v} is ready and installs when you close Win2Console"))
+                    }
+                    other if announce_result => app.toast(other.label()),
+                    _ => {}
+                }
+                if let updater::State::Failed(e) = &state {
+                    tracing::warn!("update check: {e}");
+                }
+                app.update_state = state;
+                app.update_info = info;
+                app.render();
             });
         });
     }

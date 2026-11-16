@@ -23,6 +23,8 @@ pub struct Config {
     pub startup_off: bool,
     /// Menu size in percent (`None` = 100).
     pub ui_scale: Option<u32>,
+    /// Don't download updates by themselves; just say one is available.
+    pub manual_updates: bool,
 }
 
 impl Config {
