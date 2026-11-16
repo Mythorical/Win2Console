@@ -7,6 +7,7 @@ mod app;
 mod discord;
 mod feeds;
 mod files;
+mod gifs;
 mod images;
 mod nav;
 mod osk;
@@ -80,12 +81,15 @@ fn run(paths: cs_core::AppPaths) -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
-    // Moving the mouse brings the pointer back (keyboard input leaves it alone).
+    // Moving the mouse brings the pointer back (keyboard input leaves it alone); focus pauses the music.
     {
         use slint::winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent};
         // Windows also reports "moves" when nothing moved (e.g. after hiding the pointer): compare positions.
         let last = std::cell::Cell::new((f64::NAN, f64::NAN));
         ui.window().on_winit_window_event(move |_, event| {
+            if let WindowEvent::Focused(focused) = *event {
+                app::post(move |app| app.set_window_focused(focused));
+            }
             if let WindowEvent::CursorMoved { position, .. } = event {
                 let (x, y) = last.replace((position.x, position.y));
                 if !x.is_nan() && ((position.x - x).abs() > 1.0 || (position.y - y).abs() > 1.0) {
@@ -116,6 +120,8 @@ fn run(paths: cs_core::AppPaths) -> Result<(), Box<dyn std::error::Error>> {
         app.apply_branding();
         app.load_feeds();
         app.startup_update_check();
+        app.refresh_start_with_windows();
+        crate::sounds::write_index();
         app.start_splash();
     });
 

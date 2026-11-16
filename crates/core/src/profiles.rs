@@ -52,6 +52,8 @@ impl ProfileStore {
             background: Background::default(),
             accounts: Vec::new(),
             libraries: Default::default(),
+            bio: String::new(),
+            showcase: Vec::new(),
         };
         self.save(&profile)?;
         Ok(profile)

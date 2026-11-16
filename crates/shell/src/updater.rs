@@ -45,6 +45,9 @@ pub fn run_hooks() {
     VelopackApp::build()
         .on_after_install_fast_callback(|_| install_playnite_bridge())
         .on_after_update_fast_callback(|_| install_playnite_bridge())
+        .on_before_uninstall_fast_callback(|_| {
+            let _ = cs_platform::startup::set(None);
+        })
         .run();
 }
 

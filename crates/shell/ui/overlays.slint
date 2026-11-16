@@ -1,5 +1,5 @@
 import { Theme, Icons } from "theme.slint";
-import { ProfileItem, Avatar, Icon, FocusRing, ButtonGlyph, TrophyIcon, ChatStatus, HeadphonesIcon } from "components.slint";
+import { ProfileItem, Avatar, Icon, FocusRing, ButtonGlyph, TrophyIcon, ChatStatus, HeadphonesIcon, GamerscoreIcon } from "components.slint";
 
 export struct GuideItem {
     // Design-pixel y within the panel (dividers add space, so Rust lays this out).
@@ -22,12 +22,18 @@ export struct GuideItem {
     more: string,
     // Your picture instead of the icon (with `others` small and overlapping under the label).
     profile-row: bool,
+    // The label is a gamerscore: the gamerscore mark goes before it.
+    score: bool,
 }
 
 export struct ChatLine {
     text: string,
     mine: bool,
     time: string,
+    // A GIF / image linked in the message (`url` is the link, so Rust can animate it).
+    image: image,
+    has-image: bool,
+    url: string,
 }
 
 export struct GuideTab {
@@ -59,11 +65,7 @@ export component GuidePanel inherits Rectangle {
     in property <length> slide;
     // Chat view (replaces the list).
     in property <bool> chat-mode;
-    in property <string> chat-title;
-    in property <string> chat-subtitle;
-    in property <[ChatLine]> chat-lines;
-    in property <string> compose-text;
-    in property <bool> compose-focused;
+    in property <string> gamerscore;
     callback clicked(int);
     callback hovered(int);
     callback tab-clicked(int);
@@ -71,24 +73,39 @@ export component GuidePanel inherits Rectangle {
     background: #00000059;
     TouchArea { }
 
-    // Controller icon and battery percentage, right-aligned above the clock.
+    // Gamerscore, party mic/headphones and the controller battery, right-aligned above the clock.
     HorizontalLayout {
         x: parent.width - self.width - 112 * Theme.u;
         y: 44 * Theme.u;
         width: self.preferred-width;
         height: 44 * Theme.u;
-        spacing: 10 * Theme.u;
+        spacing: 12 * Theme.u;
+        if gamerscore != "": HorizontalLayout {
+            spacing: 8 * Theme.u;
+            GamerscoreIcon {
+                size: 24px * Theme.scale;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: gamerscore;
+                font-family: Theme.ui-font;
+                font-size: 26px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+        }
         if in-party: ChatStatus {
             mic-muted: root.mic-muted;
             deafened: root.deafened;
-            size: 32px * Theme.scale;
-            // The controller glyph's ink sits 2.5px (at 30px) below its centre; match it.
-            drop: 2.5px * Theme.scale;
+            size: 36px * Theme.scale;
+            // The battery glyph's ink sits 8.5px (at 46px) below its centre; match it.
+            drop: 8.5px * Theme.scale;
         }
         if status-icons != "": Text {
             text: status-icons;
             font-family: Theme.icon-font;
-            font-size: 30px * Theme.scale;
+            // Same battery glyph and size as the home screen's.
+            font-size: 46px * Theme.scale;
             color: Theme.text;
             vertical-alignment: center;
         }
@@ -144,7 +161,6 @@ export component GuidePanel inherits Rectangle {
             y: 128 * Theme.u;
             height: panel.height - 128 * Theme.u - 130 * Theme.u;
             clip: true;
-            visible: !root.chat-mode;
         for it[i] in items: Rectangle {
             x: 12 * Theme.u;
             y: (it.y - 128 - root.scroll) * Theme.u;
@@ -158,9 +174,9 @@ export component GuidePanel inherits Rectangle {
                 width: parent.width - 36 * Theme.u;
                 background: Theme.divider;
             }
-            FocusRing { target-width: parent.width; target-height: parent.height; focused: selected == i; }
+            FocusRing { target-width: parent.width; target-height: parent.height; focused: !root.chat-mode && selected == i; }
             // Focus background is shown/hidden rather than made transparent (see FocusRing's renderer note).
-            Rectangle { visible: selected == i; border-radius: Theme.radius; background: #3A3A3A; }
+            Rectangle { visible: !root.chat-mode && selected == i; border-radius: Theme.radius; background: #3A3A3A; }
             if it.thumb: Rectangle {
                 x: 6 * Theme.u;
                 y: 2 * Theme.u;
@@ -219,12 +235,20 @@ export component GuidePanel inherits Rectangle {
                 x: (it.thumb ? 120 : it.glyph == "" && !it.profile-row ? 34 : 112) * Theme.u;
                 width: parent.width - self.x - 20 * Theme.u;
                 alignment: center;
-                Text {
-                    text: it.label;
-                    font-family: Theme.ui-font;
-                    font-size: 26px * Theme.scale;
-                    color: Theme.text;
-                    overflow: elide;
+                HorizontalLayout {
+                    spacing: 8 * Theme.u;
+                    alignment: start;
+                    if it.score: GamerscoreIcon {
+                        size: 22px * Theme.scale;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: it.label;
+                        font-family: Theme.ui-font;
+                        font-size: 26px * Theme.scale;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
                 }
                 if it.subtitle != "": Text {
                     text: it.subtitle;
@@ -235,94 +259,11 @@ export component GuidePanel inherits Rectangle {
                 }
             }
             TouchArea {
+                enabled: !root.chat-mode;
                 clicked => { root.clicked(i); }
                 changed has-hover => { if self.has-hover { root.hovered(i); } }
             }
         }
-        }
-
-        // Chat view
-        if root.chat-mode: Rectangle {
-            Text {
-                x: 32 * Theme.u;
-                y: 128 * Theme.u;
-                width: parent.width - 64 * Theme.u;
-                text: root.chat-title;
-                font-family: Theme.ui-font;
-                font-size: 32px * Theme.scale;
-                font-weight: 600;
-                color: Theme.text;
-                overflow: elide;
-            }
-            Text {
-                x: 32 * Theme.u;
-                y: 174 * Theme.u;
-                text: root.chat-subtitle;
-                font-family: Theme.ui-font;
-                font-size: 22px * Theme.scale;
-                color: Theme.text-dim;
-            }
-            Rectangle {
-                x: 0;
-                y: 220 * Theme.u;
-                width: parent.width;
-                height: panel.height - 450 * Theme.u;
-                clip: true;
-                VerticalLayout {
-                    padding-left: 24 * Theme.u;
-                    padding-right: 24 * Theme.u;
-                    spacing: 10 * Theme.u;
-                    alignment: end;
-                    for line in root.chat-lines: HorizontalLayout {
-                        alignment: line.mine ? end : start;
-                        Rectangle {
-                            max-width: 400 * Theme.u;
-                            border-radius: 14 * Theme.u;
-                            background: line.mine ? Theme.accent-tile : #3A3A3A;
-                            VerticalLayout {
-                                padding: 14 * Theme.u;
-                                padding-top: 10 * Theme.u;
-                                padding-bottom: 10 * Theme.u;
-                                spacing: 2 * Theme.u;
-                                Text {
-                                    text: line.text;
-                                    font-family: Theme.ui-font;
-                                    font-size: 24px * Theme.scale;
-                                    color: Theme.text;
-                                    wrap: word-wrap;
-                                }
-                                Text {
-                                    text: line.time;
-                                    font-family: Theme.ui-font;
-                                    font-size: 17px * Theme.scale;
-                                    color: Theme.text-faint;
-                                    horizontal-alignment: line.mine ? right : left;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // Compose field
-            Rectangle {
-                x: 12 * Theme.u;
-                y: panel.height - 210 * Theme.u;
-                width: 516 * Theme.u;
-                height: 76 * Theme.u;
-                FocusRing { target-width: parent.width; target-height: parent.height; focused: root.compose-focused || root.selected == 0; }
-                Rectangle { border-radius: Theme.radius; background: #3A3A3A; }
-                Text {
-                    x: 20 * Theme.u;
-                    width: parent.width - 40 * Theme.u;
-                    text: root.compose-text == "" ? "Type a message" : root.compose-text;
-                    font-family: Theme.ui-font;
-                    font-size: 24px * Theme.scale;
-                    color: root.compose-text == "" ? Theme.text-dim : Theme.text;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-                TouchArea { clicked => { root.clicked(0); } }
-            }
         }
 
         // Bottom icon row
@@ -331,14 +272,122 @@ export component GuidePanel inherits Rectangle {
             y: panel.height - 110 * Theme.u;
             width: 90 * Theme.u;
             height: 90 * Theme.u;
-            FocusRing { target-width: parent.width; target-height: parent.height; focused: selected == items.length + i; }
-            Rectangle { border-radius: Theme.radius; background: selected == items.length + i ? #4A4A4A : #333333; }
+            FocusRing { target-width: parent.width; target-height: parent.height; focused: !root.chat-mode && selected == items.length + i; }
+            Rectangle { border-radius: Theme.radius; background: !root.chat-mode && selected == items.length + i ? #4A4A4A : #333333; }
             Icon { glyph: b; size: 32px * Theme.scale; }
             TouchArea {
+                enabled: !root.chat-mode;
                 clicked => { root.clicked(items.length + i); }
                 changed has-hover => { if self.has-hover { root.hovered(items.length + i); } }
             }
         }
+    }
+}
+
+// A chat, popped out to the right of the Guide (like a friend's card).
+export component ChatPanel inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <[ChatLine]> lines;
+    in property <string> compose-text;
+    in property <bool> compose-focused;
+    in property <int> selected;
+    callback compose-clicked();
+
+    x: 631 * Theme.u;
+    y: 33 * Theme.u;
+    width: 560 * Theme.u;
+    border-radius: 8 * Theme.u;
+    background: Theme.panel;
+    drop-shadow-blur: 30px * Theme.scale;
+    drop-shadow-color: #000000B0;
+    clip: true;
+
+    Text {
+        x: 32 * Theme.u;
+        y: 32 * Theme.u;
+        width: parent.width - 64 * Theme.u;
+        text: root.title;
+        font-family: Theme.ui-font;
+        font-size: 32px * Theme.scale;
+        font-weight: 600;
+        color: Theme.text;
+        overflow: elide;
+    }
+    Text {
+        x: 32 * Theme.u;
+        y: 78 * Theme.u;
+        text: root.subtitle;
+        font-family: Theme.ui-font;
+        font-size: 22px * Theme.scale;
+        color: Theme.text-dim;
+    }
+    Rectangle {
+        x: 0;
+        y: 124 * Theme.u;
+        width: parent.width;
+        height: root.height - 244 * Theme.u;
+        clip: true;
+        VerticalLayout {
+            padding-left: 24 * Theme.u;
+            padding-right: 24 * Theme.u;
+            spacing: 10 * Theme.u;
+            alignment: end;
+            for line in root.lines: HorizontalLayout {
+                alignment: line.mine ? end : start;
+                Rectangle {
+                    max-width: 420 * Theme.u;
+                    border-radius: 14 * Theme.u;
+                    background: line.mine ? Theme.accent-tile : #3A3A3A;
+                    VerticalLayout {
+                        padding: 14 * Theme.u;
+                        padding-top: 10 * Theme.u;
+                        padding-bottom: 10 * Theme.u;
+                        spacing: 2 * Theme.u;
+                        if line.has-image: Image {
+                            source: line.image;
+                            width: min(320 * Theme.u, line.image.width * Theme.u);
+                            height: self.width * line.image.height / max(1, line.image.width);
+                            image-rendering: smooth;
+                        }
+                        if line.text != "": Text {
+                            text: line.text;
+                            font-family: Theme.ui-font;
+                            font-size: 24px * Theme.scale;
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: line.time;
+                            font-family: Theme.ui-font;
+                            font-size: 17px * Theme.scale;
+                            color: Theme.text-faint;
+                            horizontal-alignment: line.mine ? right : left;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Compose field
+    Rectangle {
+        x: 12 * Theme.u;
+        y: root.height - 100 * Theme.u;
+        width: parent.width - 24 * Theme.u;
+        height: 76 * Theme.u;
+        FocusRing { target-width: parent.width; target-height: parent.height; focused: root.compose-focused || root.selected == 0; }
+        Rectangle { border-radius: Theme.radius; background: #3A3A3A; }
+        Text {
+            x: 20 * Theme.u;
+            width: parent.width - 40 * Theme.u;
+            text: root.compose-text == "" ? "Type a message" : root.compose-text;
+            font-family: Theme.ui-font;
+            font-size: 24px * Theme.scale;
+            color: root.compose-text == "" ? Theme.text-dim : Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        TouchArea { clicked => { root.compose-clicked(); } }
     }
 }
 

@@ -1,0 +1,184 @@
+import { Theme } from "theme.slint";
+import { Icon, FocusRing, Avatar, ArtTile, Tile, ProfileItem, GamerscoreIcon } from "components.slint";
+import { GameButton } from "game.slint";
+
+export struct ProfileStat {
+    label: string,
+    value: string,
+}
+
+// Your profile page, after the Xbox one: name and bio on the left, your picture in the middle, actions on
+// the right and showcased games along the bottom.
+export component ProfilePage inherits Rectangle {
+    in property <ProfileItem> profile;
+    in property <string> gamerscore;
+    in property <string> bio;
+    in property <[ProfileStat]> stats;
+    in property <[GameButton]> buttons;
+    in property <[Tile]> games;
+    // Buttons first, then the games.
+    in property <int> selected;
+    // Hides the buttons while a shareable picture of the page is taken.
+    in property <bool> sharing;
+    callback clicked(int);
+    callback hovered(int);
+
+    Rectangle { background: @linear-gradient(90deg, #000000C8 0%, #00000070 50%, #000000A0 100%); }
+
+    // Top bar: you, and the page's only tab.
+    Avatar { x: 60 * Theme.u; y: 30 * Theme.u; profile: root.profile; size: 64 * Theme.u; }
+    Text {
+        x: 140 * Theme.u;
+        y: 32 * Theme.u;
+        text: root.profile.name;
+        font-family: Theme.ui-font;
+        font-size: 26px * Theme.scale;
+        color: Theme.text;
+    }
+    HorizontalLayout {
+        x: 140 * Theme.u;
+        y: 66 * Theme.u;
+        height: 26 * Theme.u;
+        spacing: 6 * Theme.u;
+        GamerscoreIcon { size: 18px * Theme.scale; y: (parent.height - self.height) / 2; }
+        Text {
+            text: root.gamerscore;
+            font-family: Theme.ui-font;
+            font-size: 20px * Theme.scale;
+            color: Theme.text-dim;
+            vertical-alignment: center;
+        }
+    }
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: 38 * Theme.u;
+        width: tab.preferred-width + 36 * Theme.u;
+        height: 52 * Theme.u;
+        border-radius: 4 * Theme.u;
+        background: Theme.accent;
+        tab := Text {
+            text: "Profile";
+            font-family: Theme.ui-font;
+            font-size: 26px * Theme.scale;
+            font-weight: 600;
+            color: Theme.text;
+        }
+    }
+    Rectangle { y: 120 * Theme.u; height: 1px; background: #FFFFFF30; }
+
+    // Left: gamerscore above the name, then bio and stats.
+    VerticalLayout {
+        x: 66 * Theme.u;
+        y: 190 * Theme.u;
+        width: 620 * Theme.u;
+        height: self.preferred-height;
+        spacing: 0;
+        HorizontalLayout {
+            height: 40 * Theme.u;
+            spacing: 10 * Theme.u;
+            alignment: start;
+            GamerscoreIcon { size: 28px * Theme.scale; y: (parent.height - self.height) / 2; }
+            Text {
+                text: root.gamerscore;
+                font-family: Theme.ui-font;
+                font-size: 30px * Theme.scale;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: root.profile.name;
+            font-family: Theme.ui-font;
+            font-size: 96px * Theme.scale;
+            color: Theme.text;
+            overflow: elide;
+        }
+    }
+    Text {
+        x: 66 * Theme.u;
+        y: 390 * Theme.u;
+        width: 560 * Theme.u;
+        height: 110 * Theme.u;
+        text: root.bio != "" ? root.bio : "No bio yet. Choose \"Edit bio\" to write one.";
+        font-family: Theme.ui-font;
+        font-size: 24px * Theme.scale;
+        color: root.bio != "" ? Theme.text : Theme.text-dim;
+        wrap: word-wrap;
+        overflow: elide;
+    }
+    // Each number sits right under its label.
+    for s[i] in root.stats: Rectangle {
+        x: (66 + i * 190) * Theme.u;
+        y: 520 * Theme.u;
+        width: 180 * Theme.u;
+        height: 80 * Theme.u;
+        Text { x: 0; y: 0; text: s.label; font-family: Theme.ui-font; font-size: 22px * Theme.scale; color: Theme.text-dim; }
+        Text { x: 0; y: 32 * Theme.u; text: s.value; font-family: Theme.ui-font; font-size: 30px * Theme.scale; color: Theme.text; }
+    }
+
+    // Middle: your picture, large.
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: 180 * Theme.u;
+        width: 400 * Theme.u;
+        height: 400 * Theme.u;
+        drop-shadow-blur: 40px * Theme.scale;
+        drop-shadow-color: #00000090;
+        border-radius: self.width / 2;
+        Avatar { profile: root.profile; size: parent.width; }
+    }
+
+    // Right: actions.
+    for b[i] in root.buttons: Rectangle {
+        visible: !root.sharing;
+        x: root.width - self.width - 66 * Theme.u;
+        y: (180 + i * 64) * Theme.u;
+        width: 400 * Theme.u;
+        height: 56 * Theme.u;
+        border-radius: 3 * Theme.u;
+        background: root.selected == i ? #FFFFFF40 : #FFFFFF22;
+        FocusRing { target-width: parent.width; target-height: parent.height; focused: root.selected == i; }
+        Icon { x: 18 * Theme.u; width: 32 * Theme.u; glyph: b.glyph; size: 22px * Theme.scale; }
+        Text {
+            x: 64 * Theme.u;
+            text: b.label;
+            font-family: Theme.ui-font;
+            font-size: 24px * Theme.scale;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        TouchArea {
+            clicked => { root.clicked(i); }
+            changed has-hover => { if self.has-hover { root.hovered(i); } }
+        }
+    }
+
+    // Bottom: showcased games.
+    Text {
+        x: 66 * Theme.u;
+        y: 650 * Theme.u;
+        text: "Showcase";
+        font-family: Theme.ui-font;
+        font-size: 30px * Theme.scale;
+        font-weight: 600;
+        color: Theme.text;
+    }
+    if root.games.length == 0: Text {
+        x: 66 * Theme.u;
+        y: 700 * Theme.u;
+        text: "Games you play show up here.";
+        font-family: Theme.ui-font;
+        font-size: 22px * Theme.scale;
+        color: Theme.text-dim;
+    }
+    for t[i] in root.games: ArtTile {
+        x: t.x * Theme.u;
+        y: t.y * Theme.u;
+        width: t.w * Theme.u;
+        height: t.h * Theme.u;
+        tile: t;
+        focused: !root.sharing && root.selected == root.buttons.length + i;
+        clicked => { root.clicked(root.buttons.length + i); }
+        hovered => { root.hovered(root.buttons.length + i); }
+    }
+}

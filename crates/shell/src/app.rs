@@ -25,7 +25,7 @@ use crate::nav::{Rect, list_move, spatial_move};
 use crate::osk::{Osk, OskOutcome};
 use crate::social::{self, Friend, Party, Presence, SocialBackend};
 use crate::ui::{
-    AchievementRow, AppWindow, AudioRow, ChatLine, GameButton, GuideItem, GuideTab, Hint, KeyView, ListItem, MenuItem,
+    AchievementRow, AppWindow, AudioRow, ProfileStat, ChatLine, GameButton, GuideItem, GuideTab, Hint, KeyView, ListItem, MenuItem,
     Modal, PickerItem, ProfileItem, Screen, SettingTile, SidebarItem, Tile,
 };
 use crate::updater;
@@ -127,6 +127,7 @@ enum View {
     About,
     SignIn,
     Game,
+    MyProfile,
 }
 
 /// The game hub page.
@@ -138,6 +139,16 @@ struct GamePageState {
 }
 
 const GAME_BUTTONS: usize = 3;
+
+/// Actions on your profile page (glyph, label).
+const PROFILE_BUTTONS: [(&str, &str); 4] = [
+    ("\u{E771}", "Customize profile"),
+    ("\u{E70F}", "Edit bio"),
+    ("\u{E7FC}", "Choose showcase games"),
+    ("\u{E72D}", "Share profile"),
+];
+/// Most games shown on the profile page.
+const SHOWCASE_MAX: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Sort {
@@ -163,6 +174,7 @@ impl Sort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LibEntry {
     All,
+    Installed,
     Provider(Provider),
     Hidden,
     ManageAddons,
@@ -260,6 +272,7 @@ enum MenuAction {
     QuitGame,
     Details(String),
     ChooseAppIcon,
+    ToggleShowcase(String),
     ResetAppIcon,
     CheckUpdates,
     InstallUpdate,
@@ -294,6 +307,7 @@ enum OskPurpose {
     NewGameName { exe: PathBuf },
     AppTitle,
     AddFriend,
+    Bio,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,6 +327,7 @@ enum GuideAction {
     Game(String),
     Settings(usize),
     SwitchProfile,
+    MyProfile,
     Search,
     AddGame,
     Power,
@@ -373,6 +388,8 @@ struct GuideEntry {
     more: String,
     /// Shows your own picture in place of the icon.
     profile_row: bool,
+    /// The label is a gamerscore (shown after the gamerscore mark).
+    score: bool,
 }
 
 const GUIDE_BUTTONS: [(&str, GuideAction); 5] = [
@@ -439,6 +456,9 @@ const VIEW_ANIM: f32 = 0.28;
 const MODAL_ANIM: f32 = 0.2;
 const SECTION_ANIM: f32 = 0.25;
 const LAUNCH_FADE: f32 = 0.3;
+/// The startup animation fades to black, then the profile picker fades in from black.
+const INTRO_FADE_OUT: f32 = 0.6;
+const INTRO_FADE_IN: f32 = 1.0;
 /// The launch screen stays at least this long, so it doesn't just flash.
 const LAUNCH_MIN: f32 = 1.5;
 
@@ -721,6 +741,7 @@ pub struct App {
     chat_save_timer: Rc<slint::Timer>,
     splash_started: Instant,
     splash_timer: Rc<slint::Timer>,
+    splash_ending: bool,
     splash_model: Rc<VecModel<crate::ui::SplashPetal>>,
 
     show_hidden: bool,
@@ -731,6 +752,10 @@ pub struct App {
     image_timer: Rc<slint::Timer>,
     pub hotkey: Option<cs_platform::window::GuideHotkey>,
     home_hotkey_on: bool,
+    /// Win2Console's window has focus (the ambient music pauses while tabbed out).
+    window_focused: bool,
+    gifs: std::cell::RefCell<crate::gifs::Gifs>,
+    gif_timer: Rc<slint::Timer>,
     /// Transitions: when the page / modal last changed, and what they were.
     anim_timer: Rc<slint::Timer>,
     view_changed: Option<Instant>,
@@ -763,6 +788,8 @@ pub struct App {
     /// Pictures from `%APPDATA%\Win2Console\avatars\`, offered as profile pictures.
     avatar_pack: Vec<PathBuf>,
     game_page: Option<GamePageState>,
+    /// Your profile page: focus (buttons, then showcased games) and where Back goes.
+    my_profile: (usize, View),
     store_feed: Vec<GameEntry>,
     gamepass_feed: Vec<GameEntry>,
     startup_video: Option<crate::video::StartupWindow>,
@@ -841,6 +868,7 @@ impl App {
             chat_save_timer: Rc::new(slint::Timer::default()),
             splash_started: Instant::now(),
             splash_timer: Rc::new(slint::Timer::default()),
+            splash_ending: false,
             splash_model: Rc::new(VecModel::default()),
             show_hidden: false,
             scanning: false,
@@ -850,6 +878,9 @@ impl App {
             image_timer: Rc::new(slint::Timer::default()),
             hotkey: None,
             home_hotkey_on: false,
+            window_focused: true,
+            gifs: std::cell::RefCell::new(crate::gifs::Gifs::new()),
+            gif_timer: Rc::new(slint::Timer::default()),
             anim_timer: Rc::new(slint::Timer::default()),
             view_changed: None,
             modal_changed: None,
@@ -874,6 +905,7 @@ impl App {
             viewer_video: None,
             avatar_pack: Vec::new(),
             game_page: None,
+            my_profile: (0, View::Home),
             store_feed: Vec::new(),
             gamepass_feed: Vec::new(),
             startup_video: None,
@@ -1024,6 +1056,7 @@ impl App {
                 View::Search => self.nav_search(action),
                 View::SignIn => self.nav_signin(action),
                 View::Game => self.nav_game(action),
+                View::MyProfile => self.nav_my_profile(action),
                 View::About => {
                     if action == NavAction::Back {
                         self.view = View::Settings;
@@ -1106,6 +1139,7 @@ impl App {
                     g.focus = i;
                 }
             }
+            ("myprofile", None) => self.my_profile.0 = i,
             ("hero", None) => self.hero_focus = i,
             ("section", None) => self.section_focus = i,
             ("lib-game", None) => {
@@ -1232,17 +1266,55 @@ impl App {
     }
 
     fn end_splash(&mut self) {
+        if self.view != View::Splash || self.splash_ending {
+            return;
+        }
+        self.splash_ending = true;
         self.splash_timer.stop();
+        // Already black (animation off, or the built-in one ran to the end): go straight to the fade-in.
+        let black = self.config.startup_off || (self.startup_video.is_none() && self.ui().get_splash_fade() < 0.05);
+        self.splash_started = Instant::now();
+        if black {
+            self.splash_started -= Duration::from_secs_f32(INTRO_FADE_OUT);
+        }
+        if let Some(video) = &self.startup_video {
+            video.fade_out(INTRO_FADE_OUT);
+        }
+        self.splash_timer.start(slint::TimerMode::Repeated, Duration::from_millis(16), || {
+            crate::with_app(|app| app.intro_fade_tick());
+        });
+        self.intro_fade_tick();
+    }
+
+    fn intro_fade_tick(&mut self) {
+        let t = self.splash_started.elapsed().as_secs_f32();
         if self.view == View::Splash {
+            if self.startup_video.is_none() {
+                self.ui().set_intro_black(ease_out(t / INTRO_FADE_OUT));
+            }
+            if t < INTRO_FADE_OUT {
+                return;
+            }
+            self.ui().set_intro_black(1.0);
             self.view = View::Profiles;
             self.render();
+            if self.startup_video.is_some() {
+                // The dashboard is drawn (black) beneath the video's own window; close it once that frame is
+                // up, then start the fade-in.
+                self.ui().window().request_redraw();
+                slint::Timer::single_shot(Duration::from_millis(80), || {
+                    crate::with_app(|app| app.startup_video = None);
+                });
+                self.splash_started = Instant::now() + Duration::from_millis(100);
+            } else {
+                self.splash_started = Instant::now();
+            }
+            return;
         }
-        // The dashboard is fully drawn beneath the video's own window; close it once the next frame is up.
-        if self.startup_video.is_some() {
-            self.ui().window().request_redraw();
-            self.splash_timer.start(slint::TimerMode::SingleShot, Duration::from_millis(80), || {
-                crate::with_app(|app| app.startup_video = None);
-            });
+        let k = (t / INTRO_FADE_IN).min(1.0);
+        self.ui().set_intro_black(1.0 - ease_out(k));
+        if k >= 1.0 {
+            self.splash_timer.stop();
         }
     }
 
@@ -1557,7 +1629,7 @@ impl App {
 
     /// Sidebar entries for the signed-in profile.
     fn lib_entries(&self) -> Vec<LibEntry> {
-        let mut v = vec![LibEntry::All];
+        let mut v = vec![LibEntry::All, LibEntry::Installed];
         let present: Vec<Provider> = self
             .profile_id()
             .map(|p| self.library.list(p, true).unwrap_or_default())
@@ -1588,6 +1660,7 @@ impl App {
         let matches = |entry: LibEntry, e: &GameEntry| match entry {
             LibEntry::Provider(pr) => (show_hidden || !e.stats.hidden) && e.game.provider == pr,
             LibEntry::Hidden => e.stats.hidden,
+            LibEntry::Installed => (show_hidden || !e.stats.hidden) && e.installed,
             _ => show_hidden || !e.stats.hidden,
         };
         self.lib_counts = entries
@@ -1897,7 +1970,7 @@ impl App {
             ),
             Setting::Music => ("\u{E8D6}", "Background music", String::new(), !self.config.music_off as i32),
             Setting::StartWithWindows => {
-                ("\u{E7B5}", "Start with Windows", String::new(), cs_platform::registry::run_at_login_enabled() as i32)
+                ("\u{E7B5}", "Start with Windows", String::new(), cs_platform::startup::enabled() as i32)
             }
             Setting::About => ("\u{E946}", "About Win2Console", String::new(), -1),
             Setting::Sleep => ("\u{E708}", "Sleep", String::new(), -1),
@@ -1919,10 +1992,19 @@ impl App {
         }
     }
 
+    /// Re-registers the startup task with the current exe path (and moves old `Run` key users over).
+    pub fn refresh_start_with_windows(&self) {
+        if cs_platform::startup::enabled()
+            && let Ok(exe) = std::env::current_exe()
+        {
+            let _ = cs_platform::startup::set(Some(&exe));
+        }
+    }
+
     fn toggle_start_with_windows(&mut self) {
-        let enable = !cs_platform::registry::run_at_login_enabled();
-        let command = std::env::current_exe().ok().map(|p| format!("\"{}\"", p.display()));
-        match cs_platform::registry::set_run_at_login(if enable { command.as_deref() } else { None }) {
+        let enable = !cs_platform::startup::enabled();
+        let exe = std::env::current_exe().ok();
+        match cs_platform::startup::set(if enable { exe.as_deref() } else { None }) {
             Ok(()) => {
                 self.config.start_with_windows = enable;
                 self.save_config();
@@ -2379,6 +2461,7 @@ impl App {
             others: Vec::new(),
             more: String::new(),
             profile_row: false,
+            score: false,
         };
         if tab == 0 {
             if let Some(game) = self.running_entry() {
@@ -2570,7 +2653,8 @@ impl App {
                 &mut y,
                 GuideEntry {
                     subtitle: "Gamerscore".into(),
-                    ..row("trophy", &format!("{} G", self.gamerscore.unwrap_or(0)), GuideAction::None)
+                    score: true,
+                    ..row("trophy", &self.gamerscore.unwrap_or(0).to_string(), GuideAction::None)
                 },
             );
             for (e, s) in &ach.games {
@@ -2658,6 +2742,7 @@ impl App {
             push(&mut out, &mut y, row("\u{E8B9}", "See all captures", GuideAction::Captures));
         } else {
             let me = self.current.as_ref().map(|p| p.id);
+            let name = self.current.as_ref().map_or_else(|| "Profile".to_string(), |p| p.name.clone());
             let others: Vec<Profile> = self.profiles.iter().filter(|p| Some(p.id) != me).cloned().collect();
             let more = if others.len() > 3 { format!("+{}", others.len() - 3) } else { String::new() };
             push(
@@ -2669,10 +2754,10 @@ impl App {
                     profile_row: true,
                     // Keeps the label on the upper line; the other profiles' pictures sit below it.
                     subtitle: " ".into(),
-                    ..row("\u{E748}", "Switch profile", GuideAction::SwitchProfile)
+                    ..row("\u{E748}", &name, GuideAction::MyProfile)
                 },
             );
-            push(&mut out, &mut y, row("", "Customize profile", GuideAction::Settings(0)));
+            push(&mut out, &mut y, row("", "Sign out", GuideAction::SwitchProfile));
         }
         out
     }
@@ -2686,6 +2771,7 @@ impl App {
                 | GuideAction::Game(_)
                 | GuideAction::Settings(_)
                 | GuideAction::SwitchProfile
+                | GuideAction::MyProfile
                 | GuideAction::Search
                 | GuideAction::AddGame
                 | GuideAction::LinkDiscord
@@ -2771,6 +2857,7 @@ impl App {
             }
             GuideAction::Settings(c) => self.open_settings(c),
             GuideAction::SwitchProfile => self.switch_profile(),
+            GuideAction::MyProfile => self.open_my_profile(),
             GuideAction::Search => self.open_search(),
             GuideAction::AddGame => {
                 self.open_files("Choose the game's .exe", Filter::Executables, FilePurpose::AddGame)
@@ -3175,6 +3262,7 @@ impl App {
     fn menu_action(&mut self, action: MenuAction) {
         match action {
             MenuAction::Close => {}
+            MenuAction::ToggleShowcase(id) => self.toggle_showcase(id),
             MenuAction::QuitGame => self.quit_game(),
             MenuAction::Details(id) => self.open_game_page(&id),
             MenuAction::Startup(choice) => {
@@ -3368,6 +3456,7 @@ impl App {
             OskPurpose::NewGameName { .. } => "Game name".into(),
             OskPurpose::AppTitle => "Win2Console".into(),
             OskPurpose::AddFriend => "Username".into(),
+            OskPurpose::Bio => "Say something about yourself".into(),
         };
         self.modal = Some(ModalState::Keyboard { osk, purpose });
     }
@@ -3457,6 +3546,7 @@ impl App {
 
     fn osk_done(&mut self, purpose: OskPurpose, text: String) {
         match purpose {
+            OskPurpose::Bio => self.update_profile(|p| p.bio = text.trim().to_string()),
             OskPurpose::AddFriend => {
                 if !text.trim().is_empty()
                     && let Some(s) = &mut self.social
@@ -3979,6 +4069,158 @@ impl App {
         ui.set_game_focus(focus as i32);
     }
 
+    fn open_my_profile(&mut self) {
+        let ret = if self.view == View::MyProfile { View::Home } else { self.view };
+        self.my_profile = (0, ret);
+        self.view = View::MyProfile;
+    }
+
+    /// The games on your profile page: the ones you picked, or else your most played.
+    fn showcase(&self) -> Vec<GameEntry> {
+        let (Some(p), Some(id)) = (&self.current, self.profile_id()) else { return Vec::new() };
+        let all = self.library.list(id, true).unwrap_or_default();
+        if !p.showcase.is_empty() {
+            return p.showcase.iter().filter_map(|g| all.iter().find(|e| &e.game.id == g).cloned()).collect();
+        }
+        let mut played: Vec<GameEntry> = all.into_iter().filter(|e| e.stats.playtime_secs > 0).collect();
+        played.sort_by(|a, b| b.stats.playtime_secs.cmp(&a.stats.playtime_secs));
+        played.truncate(SHOWCASE_MAX);
+        played
+    }
+
+    fn nav_my_profile(&mut self, action: NavAction) {
+        let buttons = PROFILE_BUTTONS.len();
+        let total = buttons + self.showcase().len();
+        let (focus, ret) = self.my_profile;
+        let focus = match action {
+            NavAction::Up if focus > 0 && focus < buttons => focus - 1,
+            NavAction::Up if focus >= buttons => buttons - 1,
+            NavAction::Down if focus + 1 < buttons => focus + 1,
+            NavAction::Down if focus + 1 == buttons && total > buttons => buttons,
+            NavAction::Left if focus > buttons => focus - 1,
+            NavAction::Right if focus >= buttons && focus + 1 < total => focus + 1,
+            NavAction::Back => return self.go(ret),
+            NavAction::Accept => {
+                match focus {
+                    0 => self.open_settings(0),
+                    1 => {
+                        let bio = self.current.as_ref().map(|p| p.bio.clone()).unwrap_or_default();
+                        self.open_keyboard("Your bio", &bio, 150, OskPurpose::Bio);
+                    }
+                    2 => self.open_showcase_menu(None),
+                    3 => self.share_profile(),
+                    _ => {
+                        if let Some(e) = self.showcase().get(focus - buttons) {
+                            let id = e.game.id.clone();
+                            self.open_game_page(&id);
+                        }
+                    }
+                }
+                return;
+            }
+            _ => focus,
+        };
+        self.my_profile.0 = focus;
+    }
+
+    /// Lists your games to pick the showcase from (most played first); `focus_id` keeps the selection.
+    fn open_showcase_menu(&mut self, focus_id: Option<&str>) {
+        let (Some(p), Some(id)) = (&self.current, self.profile_id()) else { return };
+        let picked = p.showcase.clone();
+        let mut all = self.library.list(id, true).unwrap_or_default();
+        all.sort_by(|a, b| b.stats.playtime_secs.cmp(&a.stats.playtime_secs));
+        let focus = focus_id.and_then(|f| all.iter().position(|e| e.game.id == f)).unwrap_or(0);
+        let entries = all
+            .iter()
+            .map(|e| {
+                let glyph = if picked.contains(&e.game.id) { "\u{E73A}" } else { "\u{E739}" };
+                entry(glyph, &e.game.name, MenuAction::ToggleShowcase(e.game.id.clone()))
+            })
+            .collect();
+        self.open_menu(
+            "Showcase games",
+            &format!("Pick up to {SHOWCASE_MAX} games for your profile. With none picked, your most played show."),
+            entries,
+        );
+        if let Some(ModalState::Menu { focus: f, .. }) = &mut self.modal {
+            *f = focus;
+        }
+    }
+
+    fn toggle_showcase(&mut self, id: String) {
+        let full =
+            self.current.as_ref().is_some_and(|p| p.showcase.len() >= SHOWCASE_MAX && !p.showcase.contains(&id));
+        if full {
+            self.toast(format!("You can showcase up to {SHOWCASE_MAX} games"));
+        } else {
+            let game = id.clone();
+            self.update_profile(move |p| {
+                if let Some(i) = p.showcase.iter().position(|g| *g == game) {
+                    p.showcase.remove(i);
+                } else {
+                    p.showcase.push(game);
+                }
+            });
+        }
+        self.open_showcase_menu(Some(&id));
+    }
+
+    /// Saves a picture of your profile page to Captures, ready to send to friends.
+    fn share_profile(&mut self) {
+        let ui = self.ui();
+        ui.set_profile_sharing(true);
+        let shot = ui.window().take_snapshot();
+        ui.set_profile_sharing(false);
+        let (Ok(shot), Some(dir)) = (shot, Self::captures_dir()) else {
+            self.toast("Couldn't take a picture of your profile");
+            return;
+        };
+        let name = self.current.as_ref().map_or_else(|| "Profile".to_string(), |p| p.name.clone());
+        let safe: String = name.chars().filter(|c| !r#"\/:*?"<>|"#.contains(*c)).collect();
+        let path = dir.join(format!("{} profile {}.png", safe.trim(), cs_platform::time::file_timestamp()));
+        let saved = std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|_| {
+            image::RgbaImage::from_raw(shot.width(), shot.height(), shot.as_bytes().to_vec())
+                .ok_or_else(|| "bad image".to_string())?
+                .save(&path)
+                .map_err(|e| e.to_string())
+        });
+        match saved {
+            Ok(()) => {
+                self.refresh_captures();
+                self.toast("Saved a picture of your profile to Captures, ready to share");
+            }
+            Err(e) => self.toast(format!("Couldn't save the picture: {e}")),
+        }
+    }
+
+    fn render_my_profile(&mut self, ui: &AppWindow) {
+        let Some(p) = self.current.clone() else { return };
+        let all = self.profile_id().map(|id| self.library.list(id, true).unwrap_or_default()).unwrap_or_default();
+        let hours = all.iter().map(|e| e.stats.playtime_secs).sum::<i64>() as f64 / 3600.0;
+        let stats = [
+            ("Friends", self.friends.len().to_string()),
+            ("Games", all.len().to_string()),
+            ("Hours played", format!("{hours:.0}")),
+        ]
+        .map(|(l, v)| ProfileStat { label: l.into(), value: v.into() });
+        ui.set_profile_stats(Rc::new(VecModel::from(stats.to_vec())).into());
+        ui.set_profile_bio(p.bio.clone().into());
+        let buttons = PROFILE_BUTTONS.map(|(g, l)| GameButton { glyph: g.into(), label: l.into() });
+        ui.set_profile_buttons(Rc::new(VecModel::from(buttons.to_vec())).into());
+        let games: Vec<Tile> = self
+            .showcase()
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let mut t = self.game_tile(e, Rect::new(66.0 + 216.0 * i as f32, 700.0, 200.0, 200.0), false);
+                t.caption = true;
+                t
+            })
+            .collect();
+        ui.set_profile_games(Rc::new(VecModel::from(games)).into());
+        ui.set_profile_focus(self.my_profile.0 as i32);
+    }
+
     /// Loads the total Gamerscore in the background (the add-on's database can be large).
     fn refresh_gamerscore(&mut self) {
         std::thread::spawn(|| {
@@ -3995,8 +4237,8 @@ impl App {
         let ui = self.ui();
         ui.set_menu_scale(self.config.ui_scale.unwrap_or(100) as f32 / 100.0);
         ui.set_app_title(self.config.app_title.clone().unwrap_or_else(|| "Win2Console".into()).into());
-        let icon = image::open(self.paths.root.join(APP_ICON)).ok().map(|img| {
-            let rgba = img.into_rgba8();
+        let rgba = image::open(self.paths.root.join(APP_ICON)).ok().map(|img| img.into_rgba8());
+        let icon = rgba.as_ref().map(|rgba| {
             slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
                 rgba.as_raw(),
                 rgba.width(),
@@ -4004,6 +4246,23 @@ impl App {
             ))
         });
         ui.set_app_icon(icon.unwrap_or_default());
+        // Slint only sets the small (title bar) icon; the taskbar and Alt+Tab use the big one.
+        #[cfg(windows)]
+        {
+            use slint::winit_030::WinitWindowAccessor;
+            use slint::winit_030::winit::platform::windows::WindowExtWindows;
+            use slint::winit_030::winit::window::Icon;
+            let big = rgba.and_then(|r| {
+                let (w, h) = r.dimensions();
+                Icon::from_rgba(r.into_raw(), w, h).ok()
+            });
+            // At startup the native window may not exist yet: try again shortly.
+            if ui.window().with_winit_window(|w| w.set_taskbar_icon(big)).is_none() {
+                slint::Timer::single_shot(Duration::from_millis(250), || {
+                    crate::with_app(|app| app.apply_branding());
+                });
+            }
+        }
     }
 
     fn load_avatar_pack(&mut self) {
@@ -4603,6 +4862,7 @@ impl App {
             View::About => Screen::About,
             View::SignIn => Screen::Signin,
             View::Game => Screen::Game,
+            View::MyProfile => Screen::Myprofile,
         });
         if let Some(p) = self.current.clone() {
             let item = self.profile_item(&p);
@@ -4610,13 +4870,13 @@ impl App {
         }
         ui.set_controller_status(controller_text(&self.controllers).into());
         ui.set_controller_icons(controller_icons(&self.controllers).into());
-        let (icons, text) = guide_status(&self.controllers);
-        ui.set_guide_status_icons(icons.into());
-        ui.set_guide_status(text.into());
+        // The Guide shows the same controller battery as the home screen.
+        ui.set_guide_status_icons(controller_icons(&self.controllers).into());
+        ui.set_guide_status(controller_text(&self.controllers).into());
         ui.set_in_party(self.party.is_some());
         ui.set_mic_muted(self.party.as_ref().is_some_and(|p| p.self_muted));
         ui.set_deafened(self.party.as_ref().is_some_and(|p| p.self_deafened));
-        ui.set_gamerscore(self.gamerscore.filter(|g| *g > 0).map(|g| format!("{g} G")).unwrap_or_default().into());
+        ui.set_gamerscore(self.gamerscore.unwrap_or(0).to_string().into());
 
         match self.view {
             View::Splash => {}
@@ -4629,11 +4889,13 @@ impl App {
             View::SignIn => self.render_signin(&ui),
             View::About => {}
             View::Game => self.render_game(&ui),
+            View::MyProfile => self.render_my_profile(&ui),
         }
         self.render_modal(&ui);
         self.note_transitions();
         // Ambient music on the dashboard; quiet while a game runs.
-        let music = !self.config.music_off && self.running.is_none() && self.view != View::Splash;
+        let music =
+            !self.config.music_off && self.running.is_none() && self.view != View::Splash && self.window_focused;
         crate::sounds::set_music(music);
         if self.home_hotkey_on != self.running.is_some() {
             self.home_hotkey_on = self.running.is_some();
@@ -4725,6 +4987,7 @@ impl App {
                 }
                 let label = match entry {
                     LibEntry::All => "All games".to_string(),
+                    LibEntry::Installed => "Installed".into(),
                     LibEntry::Provider(p) => p.display_name().to_string(),
                     LibEntry::Hidden => "Hidden".into(),
                     LibEntry::ManageAddons => "Manage libraries".into(),
@@ -4752,6 +5015,7 @@ impl App {
             match self.lib_entry() {
                 LibEntry::Provider(p) => p.display_name(),
                 LibEntry::Hidden => "Hidden games",
+                LibEntry::Installed => "Installed games",
                 _ => "Games",
             }
             .into(),
@@ -4887,6 +5151,7 @@ impl App {
                     .into(),
                     more: e.more.clone().into(),
                     profile_row: e.profile_row,
+                    score: e.score,
                 }
             })
             .collect();
@@ -5132,6 +5397,39 @@ impl App {
         }
     }
 
+    /// Advances the GIFs in the open chat; stops once none are showing.
+    fn tick_gifs(&mut self) {
+        let model = &self.models.chat_lines;
+        let mut any = false;
+        for i in 0..model.row_count() {
+            let Some(mut line) = model.row_data(i) else { continue };
+            let gifs = self.gifs.get_mut();
+            if line.url.is_empty() || !gifs.animated(&line.url) {
+                continue;
+            }
+            any = true;
+            if let Some(image) = gifs.frame(&line.url) {
+                line.image = image;
+                model.set_row_data(i, line);
+            }
+        }
+        if !any || !self.ui().get_chat_mode() {
+            self.gif_timer.stop();
+        }
+    }
+
+    pub fn gif_loaded(&mut self, url: String, frames: Option<Vec<(image::RgbaImage, u32)>>) {
+        self.gifs.get_mut().insert(url, frames);
+        self.render();
+    }
+
+    pub fn set_window_focused(&mut self, focused: bool) {
+        if self.window_focused != focused {
+            self.window_focused = focused;
+            self.render();
+        }
+    }
+
     fn render_guide_chat(&self, ui: &AppWindow) {
         let Some(chat) = &self.guide_chat else {
             ui.set_chat_mode(false);
@@ -5152,11 +5450,33 @@ impl App {
                 let start = msgs.len().saturating_sub(12);
                 msgs[start..]
                     .iter()
-                    .map(|m| ChatLine { text: m.text.clone().into(), mine: m.from_me, time: time_ago(m.at).into() })
-                    .collect()
+                    .map(|m| {
+                        let mut line = ChatLine {
+                            text: m.text.clone().into(),
+                            mine: m.from_me,
+                            time: time_ago(m.at).into(),
+                            ..Default::default()
+                        };
+                        if let Some((url, rest)) = crate::gifs::find_link(&m.text)
+                            && let Some(image) = self.gifs.borrow_mut().frame(&url)
+                        {
+                            line.text = rest.into();
+                            line.image = image;
+                            line.has_image = true;
+                            line.url = url.into();
+                        }
+                        line
+                    })
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let animated = lines.iter().any(|l| self.gifs.borrow().animated(&l.url));
         sync(&self.models.chat_lines, lines);
+        if animated && !self.gif_timer.running() {
+            self.gif_timer.start(slint::TimerMode::Repeated, Duration::from_millis(40), || {
+                crate::with_app(|app| app.tick_gifs());
+            });
+        }
         match &chat.compose {
             Some(osk) => {
                 ui.set_composing(true);
@@ -5190,7 +5510,7 @@ impl App {
         }
         match self.view {
             View::Splash | View::Profiles => Vec::new(),
-            View::Game => vec![("A", "Select"), ("B", "Back")],
+            View::Game | View::MyProfile => vec![("A", "Select"), ("B", "Back")],
             View::Home => match self.home_item() {
                 Some(HeroItem::Game(_)) => vec![("≡", "More options"), ("Y", "Search")],
                 _ => vec![("View", "Customize"), ("Y", "Search")],
@@ -5399,14 +5719,6 @@ fn avatar_glyph(i: usize) -> &'static str {
 
 fn controller_text(controllers: &[ControllerInfo]) -> String {
     if controllers.is_empty() { "No controller".into() } else { String::new() }
-}
-
-/// The Guide's status: a controller icon and battery percentage ("No controller" without one).
-fn guide_status(controllers: &[ControllerInfo]) -> (String, String) {
-    match controllers.first() {
-        None => (String::new(), "No controller".into()),
-        Some(c) => ("\u{E7FC}".into(), c.battery_percent.map(|p| format!("{p}%")).unwrap_or_default()),
-    }
 }
 
 /// A battery glyph per wireless controller (Segoe MDL2 Battery0–Battery10); wired ones show nothing.

@@ -220,6 +220,12 @@ pub struct Profile {
     /// Installed library add-ons and their settings, by provider key.
     #[serde(default)]
     pub libraries: std::collections::BTreeMap<String, LibrarySettings>,
+    /// Shown on the profile page.
+    #[serde(default)]
+    pub bio: String,
+    /// Games shown on the profile page (game ids); empty shows the most played.
+    #[serde(default)]
+    pub showcase: Vec<String>,
 }
 
 /// Default accent (Xbox green).

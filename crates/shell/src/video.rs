@@ -2,13 +2,17 @@
 //! WebView2 child view; it reports when playback ends (or fails) so the dashboard can take over.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
 
 use slint::ComponentHandle;
 use wry::{WebContext, WebView, WebViewBuilder, dpi};
 
 pub struct StartupVideo {
-    view: WebView,
+    view: Rc<WebView>,
     _context: WebContext,
+    _poll: slint::Timer,
 }
 
 /// The user's startup video, if there is one.
@@ -21,7 +25,7 @@ impl StartupVideo {
         window: &slint::Window,
         cache: &Path,
         video: &Path,
-        on_end: impl Fn() + Send + 'static,
+        on_end: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, String> {
         // A tiny page next to the cache so it can load the file:// video.
         let url = |p: &Path| format!("file:///{}", p.display().to_string().replace('\\', "/").replace(' ', "%20"));
@@ -30,9 +34,8 @@ impl StartupVideo {
         std::fs::write(
             &page,
             format!(
-                r#"<!doctype html><html><body style="margin:0;background:#000;overflow:hidden" onclick="window.ipc.postMessage('end')">
-<video src="{}" autoplay playsinline style="width:100vw;height:100vh;object-fit:cover"
- onended="window.ipc.postMessage('end')" onerror="window.ipc.postMessage('end')"></video></body></html>"#,
+                r#"<!doctype html><html><body style="margin:0;background:#000;overflow:hidden" onclick="window.skip=true">
+<video src="{}" autoplay playsinline style="width:100vw;height:100vh;object-fit:cover"></video></body></html>"#,
                 url(video)
             ),
         )
@@ -49,11 +52,26 @@ impl StartupVideo {
                 position: dpi::LogicalPosition::new(0.0, 0.0).into(),
                 size: dpi::LogicalSize::new(size.width as f64, size.height as f64).into(),
             })
-            .with_ipc_handler(move |_| on_end())
             .build_as_child(&window.window_handle())
             .map_err(|e| e.to_string())?;
         let _ = view.focus_parent();
-        Ok(Self { view, _context: context })
+        // Page-to-app messages don't arrive from this view, so ask the page whether it's done instead.
+        let view = Rc::new(view);
+        let on_end = Arc::new(on_end);
+        let poll = slint::Timer::default();
+        let polled = view.clone();
+        poll.start(slint::TimerMode::Repeated, Duration::from_millis(250), move || {
+            let on_end = on_end.clone();
+            let _ = polled.evaluate_script_with_callback(
+                "(function(){var v=document.querySelector('video');return !!(window.skip||!v||v.ended||v.error)})()",
+                move |done| {
+                    if done == "true" {
+                        on_end();
+                    }
+                },
+            );
+        });
+        Ok(Self { view, _context: context, _poll: poll })
     }
 }
 
@@ -74,7 +92,7 @@ impl StartupWindow {
     }
 
     /// Starts the video once the window exists and is full screen (call until it returns true).
-    pub fn attach(&mut self, cache: &Path, video: &Path, on_end: impl Fn() + Send + 'static) -> Result<bool, String> {
+    pub fn attach(&mut self, cache: &Path, video: &Path, on_end: impl Fn() + Send + Sync + 'static) -> Result<bool, String> {
         if self.video.is_some() {
             return Ok(true);
         }
@@ -83,6 +101,18 @@ impl StartupWindow {
         }
         self.video = Some(StartupVideo::open(self.window.window(), cache, video, on_end)?);
         Ok(true)
+    }
+}
+
+impl StartupWindow {
+    /// Fades the video to black over `secs`.
+    pub fn fade_out(&self, secs: f32) {
+        if let Some(v) = &self.video {
+            let ms = (secs * 1000.0) as u32;
+            let _ = v.view.evaluate_script(&format!(
+                "var v=document.querySelector('video');v.style.transition='opacity {ms}ms ease-in';v.style.opacity=0;"
+            ));
+        }
     }
 }
 

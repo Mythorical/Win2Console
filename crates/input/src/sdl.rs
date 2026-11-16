@@ -160,6 +160,7 @@ fn handle(
 
 fn info(pad: &Gamepad) -> ControllerInfo {
     let power = pad.power_info();
+    tracing::debug!("controller {:?}: power {:?} {}%", pad.name(), power.state, power.percentage);
     let battery_percent = match power.state {
         PowerLevel::OnBattery | PowerLevel::Charging if (0..=100).contains(&power.percentage) => {
             Some(power.percentage as u8)

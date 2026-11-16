@@ -3,18 +3,19 @@
 
 import { AboutSlint } from "std-widgets.slint";
 import { Theme, Icons } from "theme.slint";
-import { Tile, ProfileItem, Hint, Avatar, ArtTile, HintPill, Wallpaper, Icon, ChatStatus } from "components.slint";
+import { Tile, ProfileItem, Hint, Avatar, ArtTile, HintPill, Wallpaper, Icon, ChatStatus, GamerscoreIcon } from "components.slint";
 import { HomeScreen } from "home.slint";
 import { LibraryScreen, SidebarItem } from "library.slint";
 import { SettingsScreen, SettingTile } from "settings.slint";
 import { GamePage, GameButton, AchievementRow } from "game.slint";
-import { GuidePanel, GuideItem, GuideTab, ChatLine, MenuPanel, MenuItem, PowerPanel, FriendPanel, ChatsPanel, AudioPanel, AudioRow, PickerPanel, PickerItem, Keyboard, KeyView, InputField, Toast, ListScreen, ListItem } from "overlays.slint";
+import { ProfilePage, ProfileStat } from "profile.slint";
+import { GuidePanel, ChatPanel, GuideItem, GuideTab, ChatLine, MenuPanel, MenuItem, PowerPanel, FriendPanel, ChatsPanel, AudioPanel, AudioRow, PickerPanel, PickerItem, Keyboard, KeyView, InputField, Toast, ListScreen, ListItem } from "overlays.slint";
 import { ProfilePickerScreen } from "profiles.slint";
 import { SplashScreen, SplashPetal } from "splash.slint";
 
-export { SplashPetal, Tile, ProfileItem, Hint, SidebarItem, SettingTile, GuideItem, GuideTab, ChatLine, MenuItem, AudioRow, GameButton, AchievementRow, PickerItem, KeyView, ListItem }
+export { SplashPetal, Tile, ProfileItem, Hint, SidebarItem, SettingTile, GuideItem, GuideTab, ChatLine, MenuItem, AudioRow, GameButton, AchievementRow, ProfileStat, PickerItem, KeyView, ListItem }
 
-export enum Screen { splash, profiles, home, library, settings, files, search, about, signin, game }
+export enum Screen { splash, profiles, home, library, settings, files, search, about, signin, game, myprofile }
 export enum Modal { none, guide, menu, picker, keyboard, audio, viewer, power, friend, chats }
 
 export component AppWindow inherits Window {
@@ -42,6 +43,8 @@ export component AppWindow inherits Window {
     in property <float> splash-emblem-opacity;
     in property <float> splash-wordmark-opacity;
     in property <float> splash-fade: 1;
+    // Black cover for the fade from the startup animation into the profile picker.
+    in property <float> intro-black: 0;
     in property <float> splash-shadow-radius;
     in property <float> splash-shadow-opacity;
     in property <Modal> modal: Modal.none;
@@ -137,6 +140,13 @@ export component AppWindow inherits Window {
     in property <[AchievementRow]> game-achievements;
     in property <string> game-empty;
     in property <int> game-focus;
+    // Your profile page.
+    in property <string> profile-bio;
+    in property <[ProfileStat]> profile-stats;
+    in property <[GameButton]> profile-buttons;
+    in property <[Tile]> profile-games;
+    in property <int> profile-focus;
+    in property <bool> profile-sharing;
     in property <image> viewer-image;
     in property <string> viewer-title;
     in property <float> launch-t;
@@ -210,7 +220,7 @@ export component AppWindow inherits Window {
     }
 
     // ---- Background
-    property <bool> dashboard-bg: screen == Screen.profiles || screen == Screen.home || screen == Screen.search;
+    property <bool> dashboard-bg: screen == Screen.profiles || screen == Screen.home || screen == Screen.search || screen == Screen.myprofile;
     if dashboard-bg && background-mode == 0: Wallpaper { }
     if dashboard-bg && background-mode == 1: Rectangle { background: Theme.accent.mix(#000000, 0.3); }
     if dashboard-bg && background-mode == 2: Rectangle {
@@ -268,13 +278,21 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
             }
             // Gamerscore under the name.
-            if root.gamerscore != "": Text {
+            if root.gamerscore != "": HorizontalLayout {
                 x: 180 * Theme.u;
                 y: 112 * Theme.u;
-                text: root.gamerscore;
-                font-family: Theme.ui-font;
-                font-size: 20px * Theme.scale;
-                color: Theme.text-dim;
+                spacing: 6 * Theme.u;
+                GamerscoreIcon {
+                    size: 18px * Theme.scale;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: root.gamerscore;
+                    font-family: Theme.ui-font;
+                    font-size: 20px * Theme.scale;
+                    color: Theme.text-dim;
+                    vertical-alignment: center;
+                }
             }
             HorizontalLayout {
                 x: root.width - self.width - 112 * Theme.u;
@@ -368,6 +386,20 @@ export component AppWindow inherits Window {
             selected: root.game-focus;
             clicked(i) => { root.pointer("game", 0, i, true); }
             hovered(i) => { root.pointer("game", 0, i, false); }
+        }
+
+        if screen == Screen.myprofile: ProfilePage {
+            profile: root.current-profile;
+            // Shown even at 0, like the Xbox profile.
+            gamerscore: root.gamerscore != "" ? root.gamerscore : "0";
+            bio: root.profile-bio;
+            stats: root.profile-stats;
+            buttons: root.profile-buttons;
+            games: root.profile-games;
+            selected: root.profile-focus;
+            sharing: root.profile-sharing;
+            clicked(i) => { root.pointer("myprofile", 0, i, true); }
+            hovered(i) => { root.pointer("myprofile", 0, i, false); }
         }
 
         if screen == Screen.search: Rectangle {
@@ -530,19 +562,26 @@ export component AppWindow inherits Window {
         deafened: root.deafened;
         scroll: root.guide-scroll;
         chat-mode: root.chat-mode;
-        chat-title: root.chat-title;
-        chat-subtitle: root.chat-subtitle;
-        chat-lines: root.chat-lines;
-        compose-text: root.compose-text;
-        compose-focused: root.composing;
+        gamerscore: root.gamerscore;
         clicked(i) => { root.pointer("guide", 0, i, true); }
         hovered(i) => { root.pointer("guide", 0, i, false); }
         tab-clicked(i) => { root.pointer("guide-tab", 0, i, true); }
     }
-    // Docked keyboard for writing a chat message, to the right of the Guide.
-    if modal == Modal.guide && composing: Keyboard {
-        x: max(640 * Theme.u, (root.width - self.width) / 2);
-        y: root.height - self.height - 50 * Theme.u;
+    // The open chat pops out beside the Guide; its keyboard docks underneath it.
+    if modal == Modal.guide && chat-mode: ChatPanel {
+        height: root.height - 66 * Theme.u - (root.composing ? kb.height + 20 * Theme.u : 0);
+        title: root.chat-title;
+        subtitle: root.chat-subtitle;
+        lines: root.chat-lines;
+        compose-text: root.compose-text;
+        compose-focused: root.composing;
+        selected: root.guide-focus;
+        compose-clicked => { root.pointer("guide", 0, 0, true); }
+    }
+    kb := Keyboard {
+        visible: modal == Modal.guide && composing;
+        x: 631 * Theme.u;
+        y: root.height - self.height - 33 * Theme.u;
         keys: root.kb-keys;
         selected: root.kb-focus;
         clicked(i) => { root.pointer("key", 0, i, true); }
@@ -707,6 +746,11 @@ export component AppWindow inherits Window {
         x: (root.width - self.width) / 2;
         y: root.height - self.height - 140 * Theme.u;
         message: root.toast;
+    }
+
+    if root.intro-black > 0: Rectangle {
+        background: black;
+        opacity: root.intro-black;
     }
 }
 

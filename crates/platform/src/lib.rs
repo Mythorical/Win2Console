@@ -10,6 +10,7 @@ pub mod process;
 pub mod registry;
 pub mod secret;
 pub mod sound;
+pub mod startup;
 pub mod time;
 pub mod window;
 

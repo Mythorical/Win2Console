@@ -90,14 +90,15 @@ fn synth(sound: Sound) -> Vec<f32> {
     b
 }
 
-/// ~32 s pad that loops seamlessly: slow chords of soft partials with a gentle swell.
+/// ~32 s floaty pad that loops seamlessly: bright, airy chords (detuned for a soft shimmer), sparse
+/// glassy chimes from a pentatonic scale, and a wrap-around echo so the loop has no seam.
 fn synth_ambient() -> Vec<f32> {
     const SR: f32 = 22_050.0;
-    let chords: [[f32; 4]; 4] = [
-        [130.8, 196.0, 246.9, 329.6], // Cmaj7
-        [110.0, 164.8, 261.6, 329.6], // Am7
-        [87.3, 174.6, 220.0, 329.6],  // Fmaj7
-        [98.0, 146.8, 246.9, 293.7],  // G
+    let chords: [&[f32]; 4] = [
+        &[174.6, 220.0, 329.6, 392.0, 523.3], // Fmaj9
+        &[261.6, 392.0, 587.3, 659.3],        // Cadd9
+        &[220.0, 329.6, 493.9, 523.3],        // Am(add9)
+        &[196.0, 293.7, 440.0, 493.9],        // Gsus2(add3)
     ];
     let per = 8.0;
     let n = (per * chords.len() as f32 * SR) as usize;
@@ -106,22 +107,52 @@ fn synth_ambient() -> Vec<f32> {
         // Each chord fades in/out over the neighbouring ones (wrapping), so the loop has no seam.
         for k in -1i32..=1 {
             let start = (c as f32 + k as f32 * chords.len() as f32) * per - per * 0.5;
-            for i in 0..n {
+            for (i, sample) in out.iter_mut().enumerate() {
                 let t = i as f32 / SR - start;
                 if !(0.0..per * 2.0).contains(&t) {
                     continue;
                 }
                 let env = (std::f32::consts::PI * t / (per * 2.0)).sin().powi(2);
+                let x = i as f32 / SR;
                 let mut v = 0.0;
                 for (j, &hz) in chord.iter().enumerate() {
-                    let wob = 1.0 + 0.002 * (TAU * 0.13 * t + j as f32).sin();
-                    v += (TAU * hz * wob * (i as f32 / SR)).sin() * 0.06;
-                    v += (TAU * hz * 2.0 * (i as f32 / SR)).sin() * 0.012;
+                    // Two slightly detuned voices per note, gently breathing in and out of phase.
+                    let breathe = 0.75 + 0.25 * (TAU * 0.07 * x + j as f32 * 1.7).sin();
+                    v += ((TAU * hz * 1.0015 * x).sin() + (TAU * hz * 0.9985 * x).sin()) * 0.022 * breathe;
+                    v += (TAU * hz * 2.0 * x).sin() * 0.004;
                 }
-                out[i] += v * env;
+                *sample += v * env;
             }
         }
     }
+    // Chimes: one every 1.6 s or so, picked from C major pentatonic up high, with long soft tails.
+    let chimes = [1046.5, 1174.7, 1318.5, 1568.0, 1760.0, 784.0, 880.0];
+    let mut seed: u32 = 0x9E37_79B9;
+    let mut at = 0.4;
+    while at < per * chords.len() as f32 {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let hz = chimes[(seed % chimes.len() as u32) as usize];
+        let s0 = (at * SR) as usize;
+        for i in 0..(5.0 * SR) as usize {
+            let t = i as f32 / SR;
+            let env = (t * 60.0).min(1.0) * (-t * 1.1).exp() * 0.03;
+            let p = TAU * hz * t;
+            out[(s0 + i) % n] += (p.sin() + 0.25 * (2.0 * p).sin()) * env;
+        }
+        at += 1.2 + (seed % 1000) as f32 / 1000.0 * 0.9;
+    }
+    // Airy wrap-around echo (a few taps), then normalise.
+    let dry = out.clone();
+    for (tap, gain) in [(0.43, 0.42), (0.86, 0.22), (1.29, 0.11)] {
+        let d = (tap * SR) as usize;
+        for i in 0..n {
+            out[i] += dry[(i + n - d) % n] * gain;
+        }
+    }
+    let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+    out.iter_mut().for_each(|v| *v *= 0.45 / peak);
     out
 }
 
@@ -148,6 +179,32 @@ fn wav(samples: &[f32], rate: u32) -> Vec<u8> {
         w.extend_from_slice(&((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).to_le_bytes());
     }
     w
+}
+
+/// Writes `sounds\README.txt`, listing every file that replaces a built-in sound.
+pub fn write_index() {
+    let Some(dir) = sounds_dir() else { return };
+    let text = "\
+Win2Console sounds
+==================
+
+Put a file with one of these names in this folder to replace the built-in sound.
+Delete it to go back to the built-in one. Changes apply the next time Win2Console starts.
+
+UI sounds (.wav only):
+  move.wav      moving the selection
+  select.wav    pressing A / opening something
+  back.wav      pressing B / going back
+  guide.wav     opening the Guide
+  startup.wav   the built-in startup animation
+
+Background music (.mp3 or .wav, loops):
+  ambient.mp3   or   ambient.wav
+
+The startup video isn't in here: choose it in Settings > System > Startup animation.
+";
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("README.txt"), text.replace('\n', "\r\n"));
 }
 
 pub fn play(sound: Sound) {
@@ -181,7 +238,7 @@ pub fn set_music(on: bool) {
         return;
     }
     let Some(path) =
-        std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("Win2Console").join("cache").join("ambient-v1.wav"))
+        std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("Win2Console").join("cache").join("ambient-v2.wav"))
     else {
         return;
     };
