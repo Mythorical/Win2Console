@@ -1,9 +1,12 @@
 //! Detects when a launched game is running and when it exits, for playtime and "close game".
 //!
-//! - Exe launches: the game counts as running while the launched PID, or any process with the
-//!   same executable path, is alive.
+//! - Exe launches: the game counts as running while the launched PID, any process with the same
+//!   executable path, or (for a real game folder) any process inside its install folder is alive, so
+//!   launcher exes that start the actual game and quit are followed.
 //! - URI launches (Steam, Epic): the launcher starts the game, so we wait (up to `start_timeout`)
 //!   for any process whose executable is inside the game's install folder, then track until none remain.
+//! - A game only counts as ended once nothing has been running for `EXIT_GRACE`, so restarts and
+//!   launcher → game handoffs don't end it.
 //!
 //! [`Tracker`] is a pure state machine; [`spawn`] drives it on a background thread.
 
@@ -17,6 +20,7 @@ use cs_platform::process::{ProcessSource, normalize_dir, normalize_path};
 
 pub const POLL_INTERVAL: Duration = Duration::from_secs(1);
 pub const START_TIMEOUT: Duration = Duration::from_secs(180);
+pub const EXIT_GRACE: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrackerEvent {
@@ -34,6 +38,8 @@ pub enum TrackerEvent {
 enum Phase {
     Waiting { since: Instant },
     Running { since: Instant },
+    /// Nothing is running since `gone`; it may come back (a launcher handing off to the game).
+    Gone { since: Instant, gone: Instant },
     Done,
 }
 
@@ -50,7 +56,11 @@ pub struct Target {
 impl Target {
     pub fn for_game(game: &Game, launched_pid: Option<u32>) -> Self {
         match &game.launch {
-            LaunchSpec::Exe { path, .. } => Self { pid: launched_pid, exe: Some(normalize_path(path)), dir: None },
+            LaunchSpec::Exe { path, .. } => Self {
+                pid: launched_pid,
+                exe: Some(normalize_path(path)),
+                dir: game.install_dir.as_deref().map(normalize_dir).filter(|d| is_game_folder(d)),
+            },
             LaunchSpec::Uri { .. } => {
                 Self { pid: launched_pid, exe: None, dir: game.install_dir.as_deref().map(normalize_dir) }
             }
@@ -73,6 +83,14 @@ impl Target {
         }
         out
     }
+}
+
+/// Whether a (normalised) folder holds just one game, rather than being Windows or a shared parent folder.
+fn is_game_folder(dir: &str) -> bool {
+    let rest = dir.split_once(":\\").map_or(dir, |(_, r)| r);
+    !rest.is_empty()
+        && !rest.starts_with("windows\\")
+        && !matches!(rest, "program files\\" | "program files (x86)\\" | "users\\" | "games\\")
 }
 
 pub struct Tracker {
@@ -99,8 +117,16 @@ impl Tracker {
                 Some(TrackerEvent::NotDetected)
             }
             Phase::Running { since } if !alive => {
+                self.phase = Phase::Gone { since, gone: now };
+                None
+            }
+            Phase::Gone { since, .. } if alive => {
+                self.phase = Phase::Running { since };
+                None
+            }
+            Phase::Gone { since, gone } if now.duration_since(gone) >= EXIT_GRACE => {
                 self.phase = Phase::Done;
-                Some(TrackerEvent::Ended { secs: now.duration_since(since).as_secs() as i64 })
+                Some(TrackerEvent::Ended { secs: gone.duration_since(since).as_secs() as i64 })
             }
             _ => None,
         }
@@ -110,6 +136,7 @@ impl Tracker {
     pub fn cancel(&mut self, now: Instant) -> TrackerEvent {
         let secs = match self.phase {
             Phase::Running { since } => now.duration_since(since).as_secs() as i64,
+            Phase::Gone { since, gone } => gone.duration_since(since).as_secs() as i64,
             _ => 0,
         };
         self.phase = Phase::Done;
@@ -252,7 +279,8 @@ mod tests {
         assert_eq!(tr.poll(&procs, t0 + Duration::from_secs(70)), None);
 
         procs.set(&[(10, "c:/x/steam.exe")]);
-        assert_eq!(tr.poll(&procs, t0 + Duration::from_secs(130)), Some(TrackerEvent::Ended { secs: 120 }));
+        assert_eq!(tr.poll(&procs, t0 + Duration::from_secs(130)), None);
+        assert_eq!(tr.poll(&procs, t0 + Duration::from_secs(140)), Some(TrackerEvent::Ended { secs: 120 }));
         assert!(tr.is_done());
     }
 
@@ -277,7 +305,30 @@ mod tests {
 
         // Launched PID gone but svchost (same folder) still running: the game has ended.
         procs.set(&[(7, r"C:\Windows\System32\svchost.exe")]);
-        assert_eq!(tr.poll(&procs, t0 + Duration::from_secs(3)), Some(TrackerEvent::Ended { secs: 3 }));
+        assert_eq!(tr.poll(&procs, t0 + Duration::from_secs(3)), None);
+        assert_eq!(tr.poll(&procs, t0 + Duration::from_secs(13)), Some(TrackerEvent::Ended { secs: 3 }));
+    }
+
+    #[test]
+    fn exe_game_follows_launcher_handoff() {
+        let procs = FakeProcs::default();
+        let t0 = Instant::now();
+        let game = Game {
+            install_dir: Some(PathBuf::from(r"D:\Games\Hollow")),
+            launch: LaunchSpec::Exe { path: r"D:\Games\Hollow\launcher.exe".into(), args: vec![], working_dir: None },
+            ..exe_game()
+        };
+        let mut tr = Tracker::new(Target::for_game(&game, Some(42)), t0, START_TIMEOUT);
+        procs.set(&[(42, r"D:\Games\Hollow\launcher.exe")]);
+        assert_eq!(tr.poll(&procs, t0), Some(TrackerEvent::Started));
+        // The launcher quits; a few seconds later the game itself (elsewhere in the folder) is up.
+        procs.set(&[]);
+        assert_eq!(tr.poll(&procs, t0 + Duration::from_secs(2)), None);
+        procs.set(&[(50, r"D:\Games\Hollow\bin\game.exe")]);
+        assert_eq!(tr.poll(&procs, t0 + Duration::from_secs(5)), None);
+        procs.set(&[]);
+        assert_eq!(tr.poll(&procs, t0 + Duration::from_secs(60)), None);
+        assert_eq!(tr.poll(&procs, t0 + Duration::from_secs(70)), Some(TrackerEvent::Ended { secs: 60 }));
     }
 
     #[test]

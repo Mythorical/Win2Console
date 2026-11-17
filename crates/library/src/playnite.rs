@@ -88,7 +88,8 @@ impl ExportedGame {
         }
     }
 
-    /// How Win2Console starts it: the exported play action, otherwise through Playnite. Not-installed games
+    /// How Win2Console starts it: the exported play action, then the store's own launch link (much faster than
+    /// waiting for Playnite to start), otherwise through Playnite. Not-installed games
     /// get their Playnite install link instead (choosing them starts the install).
     pub fn launch(&self) -> LaunchSpec {
         if !self.installed {
@@ -103,7 +104,16 @@ impl ExportedGame {
                 args: non_empty(&p.args).map(|a| vec![a.to_string()]).unwrap_or_default(),
                 working_dir: non_empty(&p.working_dir).map(PathBuf::from),
             },
-            _ => LaunchSpec::Uri { uri: format!("playnite://playnite/start/{}", self.id) },
+            _ => {
+                let gid = non_empty(&self.game_id);
+                let uri = match (provider_for_source(self.source.as_deref()), gid) {
+                    (Provider::Steam, Some(id)) => format!("steam://rungameid/{id}"),
+                    (Provider::Epic, Some(id)) => format!("com.epicgames.launcher://apps/{id}?action=launch&silent=true"),
+                    (Provider::Ubisoft, Some(id)) => format!("uplay://launch/{id}/0"),
+                    _ => format!("playnite://playnite/start/{}", self.id),
+                };
+                LaunchSpec::Uri { uri }
+            }
         }
     }
 
@@ -181,6 +191,8 @@ mod tests {
         { "id": "44444444-4444-4444-4444-444444444444", "name": "Hidden", "source": "GOG", "game_id": "1",
           "installed": true, "hidden": true },
         { "id": "55555555-5555-5555-5555-555555555555", "name": "No Action", "source": "Ubisoft Connect", "game_id": "720",
+          "installed": true, "hidden": false, "play": null },
+        { "id": "66666666-6666-6666-6666-666666666666", "name": "Emulated", "source": null, "game_id": null,
           "installed": true, "hidden": false, "play": null }
       ]
     }"#;
@@ -189,7 +201,7 @@ mod tests {
     fn maps_export_to_games() {
         let export = parse(SAMPLE).unwrap();
         let games = imported_games(&export);
-        assert_eq!(games.len(), 4); // hidden one skipped
+        assert_eq!(games.len(), 5); // hidden one skipped
 
         let tf2 = &games[0];
         assert_eq!((tf2.game.id.as_str(), tf2.game.provider, tf2.installed), ("steam:440", Provider::Steam, true));
@@ -216,11 +228,14 @@ mod tests {
             LaunchSpec::Uri { uri: "playnite://win2console/install/33333333-3333-3333-3333-333333333333".into() }
         );
 
-        let fallback = &games[3];
-        assert_eq!(fallback.game.provider, Provider::Ubisoft);
+        let store = &games[3];
+        assert_eq!(store.game.provider, Provider::Ubisoft);
+        assert_eq!(store.game.launch, LaunchSpec::Uri { uri: "uplay://launch/720/0".into() });
+
+        let fallback = &games[4];
         assert_eq!(
             fallback.game.launch,
-            LaunchSpec::Uri { uri: "playnite://playnite/start/55555555-5555-5555-5555-555555555555".into() }
+            LaunchSpec::Uri { uri: "playnite://playnite/start/66666666-6666-6666-6666-666666666666".into() }
         );
     }
 

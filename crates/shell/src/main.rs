@@ -92,6 +92,16 @@ fn run(paths: cs_core::AppPaths) -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    // The in-game Guide's window stays cloaked until a frame with the Guide has been drawn.
+    {
+        let _ = ui.window().set_rendering_notifier(|state, _| {
+            if matches!(state, slint::RenderingState::AfterRendering) && cs_platform::window::own_window_is_cloaked() {
+                slint::Timer::single_shot(std::time::Duration::from_millis(20), || {
+                    cs_platform::window::cloak_own_window(false)
+                });
+            }
+        });
+    }
     // Moving the mouse brings the pointer back (keyboard input leaves it alone); focus pauses the music.
     {
         use slint::winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent};

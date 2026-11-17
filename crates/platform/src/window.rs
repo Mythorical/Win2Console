@@ -1,45 +1,36 @@
 //! Bringing Win2Console back to the foreground (e.g. when a game exits), like a console returning to
 //! its dashboard.
 
+/// The main window, once it exists. Other windows of ours (pop-ups, the keyboard) must not be mistaken for it.
+static MAIN_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+pub fn set_main_window(hwnd: isize) {
+    MAIN_WINDOW.store(hwnd, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(windows)]
+fn own_window() -> Option<windows::Win32::Foundation::HWND> {
+    match MAIN_WINDOW.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => find_window(std::process::id()),
+        h => Some(windows::Win32::Foundation::HWND(h as *mut _)),
+    }
+}
+
 /// Restores and focuses this process's main window.
 ///
 /// Windows only lets the process that owns the foreground window move focus elsewhere, so we briefly
 /// attach our input queue to the foreground thread (the standard workaround) before `SetForegroundWindow`.
+/// Controller input doesn't count as user input to Windows, so if that's still refused we tap Alt, which
+/// lifts the foreground lock, and try again.
 #[cfg(windows)]
 pub fn bring_own_window_to_front() {
-    use windows::Win32::Foundation::{HWND, LPARAM};
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, EnumWindows, GetForegroundWindow, GetWindowThreadProcessId, IsWindowVisible, SW_RESTORE,
-        SetForegroundWindow, ShowWindow,
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SW_RESTORE, SetForegroundWindow, ShowWindow,
     };
-    use windows::core::BOOL;
 
-    struct Search {
-        pid: u32,
-        found: Option<HWND>,
-    }
-
-    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        // SAFETY: lparam is the `&mut Search` passed to EnumWindows below, alive for the whole call.
-        let search = unsafe { &mut *(lparam.0 as *mut Search) };
-        let mut pid = 0u32;
-        // SAFETY: valid window handle from EnumWindows and a valid out-param.
-        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-        // SAFETY: valid window handle.
-        if pid == search.pid && unsafe { IsWindowVisible(hwnd) }.as_bool() {
-            search.found = Some(hwnd);
-            return BOOL(0); // stop
-        }
-        BOOL(1)
-    }
-
-    let mut search = Search { pid: std::process::id(), found: None };
-    // SAFETY: the callback only dereferences `search`, which outlives the call. EnumWindows reports
-    // an "error" when the callback stops early, which is expected here.
-    let _ = unsafe { EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize)) };
-    let Some(hwnd) = search.found else {
+    let Some(hwnd) = own_window() else {
         tracing::warn!("bring_own_window_to_front: window not found");
         return;
     };
@@ -59,11 +50,49 @@ pub fn bring_own_window_to_front() {
         if attached {
             let _ = windows::Win32::System::Threading::AttachThreadInput(our_thread, fg_thread, false);
         }
+        if GetForegroundWindow() != hwnd {
+            use windows::Win32::UI::Input::KeyboardAndMouse::{
+                INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_MENU,
+            };
+            let key = |flags| INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_MENU, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 } },
+            };
+            SendInput(&[key(KEYBD_EVENT_FLAGS(0))], size_of::<INPUT>() as i32);
+            let _ = SetForegroundWindow(hwnd);
+            SendInput(&[key(KEYEVENTF_KEYUP)], size_of::<INPUT>() as i32);
+            let _ = BringWindowToTop(hwnd);
+        }
     }
 }
 
 #[cfg(not(windows))]
 pub fn bring_own_window_to_front() {}
+
+/// Hides the main window from the screen without minimising it (DWM cloaking), so it can be brought to the
+/// front and repainted before anyone sees it: a restored window first shows its last frame (the dashboard).
+static CLOAKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+pub fn cloak_own_window(cloak: bool) {
+    use windows::Win32::Graphics::Dwm::{DWMWA_CLOAK, DwmSetWindowAttribute};
+    let Some(hwnd) = own_window() else { return };
+    CLOAKED.store(cloak, std::sync::atomic::Ordering::Relaxed);
+    let value = windows::core::BOOL::from(cloak);
+    // SAFETY: valid window handle and a BOOL-sized attribute value.
+    unsafe {
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, &value as *const _ as *const _, size_of_val(&value) as u32);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn cloak_own_window(cloak: bool) {
+    CLOAKED.store(cloak, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn own_window_is_cloaked() -> bool {
+    CLOAKED.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Whether one of this process's windows is in the foreground.
 #[cfg(windows)]
@@ -86,7 +115,7 @@ pub fn own_window_is_foreground() -> bool {
 #[cfg(windows)]
 pub fn minimize_own_window() {
     use windows::Win32::UI::WindowsAndMessaging::{SW_MINIMIZE, ShowWindow};
-    if let Some(hwnd) = find_window(std::process::id()) {
+    if let Some(hwnd) = own_window() {
         // SAFETY: valid window handle.
         unsafe {
             let _ = ShowWindow(hwnd, SW_MINIMIZE);
@@ -277,21 +306,26 @@ pub fn foreground_window() -> isize {
     0
 }
 
-/// Puts a window (from [`foreground_window`]) back in front.
+/// Puts a window (from [`foreground_window`]) back in front; false if it's gone or is one of ours.
 #[cfg(windows)]
-pub fn set_foreground_window(hwnd: isize) {
-    if hwnd != 0 {
-        // SAFETY: SetForegroundWindow tolerates stale handles.
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(windows::Win32::Foundation::HWND(
-                hwnd as *mut _,
-            ));
+pub fn set_foreground_window(hwnd: isize) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow, SetForegroundWindow};
+    let hwnd = windows::Win32::Foundation::HWND(hwnd as *mut _);
+    // SAFETY: plain Win32 calls; they tolerate stale handles.
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if hwnd.0.is_null() || !IsWindow(Some(hwnd)).as_bool() || pid == std::process::id() {
+            return false;
         }
+        SetForegroundWindow(hwnd).as_bool()
     }
 }
 
 #[cfg(not(windows))]
-pub fn set_foreground_window(_hwnd: isize) {}
+pub fn set_foreground_window(_hwnd: isize) -> bool {
+    false
+}
 
 /// Clips a window to a rounded rectangle (e.g. the pill-shaped achievement pop-up).
 #[cfg(windows)]

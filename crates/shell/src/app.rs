@@ -494,6 +494,8 @@ struct InGame {
     backdrop: Option<slint::Image>,
     /// The backdrop has been handed to the UI.
     shown: bool,
+    /// The window that was in front (the game), to go back to.
+    prev: isize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -785,6 +787,9 @@ pub struct App {
     scanning: bool,
     scan_summary: String,
     running: Option<Running>,
+    /// A game was launched and Win2Console hasn't been switched back to since: while another app is in front
+    /// the controller belongs to it, even if the game's process couldn't be tracked.
+    away: bool,
     ingame: Option<InGame>,
     image_timer: Rc<slint::Timer>,
     pub hotkey: Option<cs_platform::window::GuideHotkey>,
@@ -920,6 +925,7 @@ impl App {
             scanning: false,
             scan_summary: String::new(),
             running: None,
+            away: false,
             ingame: None,
             image_timer: Rc::new(slint::Timer::default()),
             hotkey: None,
@@ -1073,7 +1079,7 @@ impl App {
             self.nav_vkeyboard(action);
             return true;
         }
-        if (self.running.is_some() || self.desktop)
+        if (self.running.is_some() || self.desktop || self.away)
             && action != NavAction::Guide
             && !cs_platform::window::own_window_is_foreground()
         {
@@ -1437,7 +1443,7 @@ impl App {
         if self.ingame.is_some() || matches!(self.modal, Some(ModalState::Guide { .. })) {
             self.close_guide();
         } else if self.current.is_some() && self.view != View::Profiles {
-            if (self.running.is_some() || self.desktop) && !cs_platform::window::own_window_is_foreground() {
+            if !cs_platform::window::own_window_is_foreground() {
                 self.open_ingame_guide();
             }
             self.modal = Some(ModalState::Guide { tab: 0, focus: 0 });
@@ -1458,18 +1464,22 @@ impl App {
                 &c.rgba, c.width, c.height,
             ))
         });
-        self.ingame = Some(InGame { capture, backdrop, shown: false });
+        let prev = cs_platform::window::foreground_window();
+        self.ingame = Some(InGame { capture, backdrop, shown: false, prev });
         // The controller navigates the Guide, not the pointer.
         cs_input::set_mouse_mode(false);
+        // Hidden until it has painted the Guide over the game (see main.rs), or it flashes the dashboard.
+        cs_platform::window::cloak_own_window(true);
         cs_platform::window::bring_own_window_to_front();
+        slint::Timer::single_shot(Duration::from_millis(500), || cs_platform::window::cloak_own_window(false));
     }
 
     /// Closes the Guide; over a game, goes back to the game.
     fn close_guide(&mut self) {
         self.modal = None;
         self.guide_chat = None;
-        if self.ingame.take().is_some() {
-            self.resume_game();
+        if let Some(ingame) = self.ingame.take() {
+            self.resume_game(ingame.prev);
             if self.desktop {
                 cs_input::set_mouse_mode(true);
             }
@@ -1482,7 +1492,11 @@ impl App {
         self.leave_desktop();
     }
 
-    fn resume_game(&mut self) {
+    fn resume_game(&mut self, prev: isize) {
+        // Back to whatever was in front when the Guide opened, else the tracked game's window.
+        if prev != 0 && cs_platform::window::set_foreground_window(prev) {
+            return;
+        }
         let pids = self.game_pids();
         if !cs_platform::window::focus_process(&pids) {
             cs_platform::window::minimize_own_window();
@@ -2873,7 +2887,7 @@ impl App {
                 if self.ingame.is_some() {
                     self.close_guide();
                 } else {
-                    self.resume_game();
+                    self.resume_game(0);
                 }
             }
             GuideAction::Screenshot => {
@@ -2947,8 +2961,8 @@ impl App {
             GuideAction::MyProfile => self.open_my_profile(),
             GuideAction::Keyboard => {
                 // Back to the game (or the desktop) first, so the keys go to it.
-                if self.ingame.take().is_some() {
-                    self.resume_game();
+                if let Some(ingame) = self.ingame.take() {
+                    self.resume_game(ingame.prev);
                 }
                 self.open_vkeyboard();
             }
@@ -3155,7 +3169,7 @@ impl App {
         crate::sounds::play(crate::sounds::Sound::Notify);
         let picture = notice.image.as_ref().and_then(|p| self.images.get(p, Size::Tile));
         let text = if notice.body.is_empty() { notice.title.clone() } else { format!("{}: {}", notice.title, notice.body) };
-        if self.running.is_some() && !cs_platform::window::own_window_is_foreground() {
+        if !cs_platform::window::own_window_is_foreground() {
             self.notify_over_game_with(&text, picture);
         }
         self.toast_in_app(&text);
@@ -4101,7 +4115,7 @@ impl App {
             .then(|| self.current.as_ref()?.accounts.iter().find(|a| a.service == Service::Steam).cloned())
             .flatten();
         match wanted {
-            Some(a) if cs_library::steam::active_user().as_deref() != Some(a.account_id.as_str()) => {
+            Some(a) if !cs_library::steam::active_user().is_some_and(|u| u.eq_ignore_ascii_case(&a.account_id)) => {
                 self.show_launch_screen(game);
                 self.ui().set_launch_status(format!("Switching Steam to {}…", a.display_name).into());
                 let game = game.clone();
@@ -4122,7 +4136,15 @@ impl App {
 
     fn launch_now(&mut self, game: &Game) {
         let Some(profile) = self.profile_id() else { return };
-        match cs_platform::process::launch(&game.launch) {
+        // Through Playnite: skip its splash screen and library update so the game starts sooner.
+        let result = match &game.launch {
+            cs_core::LaunchSpec::Uri { uri } if uri.starts_with("playnite://playnite/start/") => {
+                // Playnite's own process isn't the game: don't track it.
+                self.playnite_link(uri, &["--nolibupdate"]).map(|_| None)
+            }
+            spec => cs_platform::process::launch(spec),
+        };
+        match result {
             Ok(pid) => {
                 self.show_launch_screen(game);
                 self.stop_tracking();
@@ -4135,6 +4157,7 @@ impl App {
                     }
                 });
                 self.running = Some(Running { game_id, profile, handle });
+                self.away = true;
                 if let Some(s) = &mut self.social {
                     s.set_playing(Some(&game.name));
                 }
@@ -4630,6 +4653,9 @@ impl App {
                 Icon::from_rgba(r.into_raw(), w, h).ok()
             });
             // At startup the native window may not exist yet: try again shortly.
+            if let Some(hwnd) = overlay_hwnd(ui.window()) {
+                cs_platform::window::set_main_window(hwnd);
+            }
             if ui.window().with_winit_window(|w| w.set_taskbar_icon(big)).is_none() {
                 slint::Timer::single_shot(Duration::from_millis(250), || {
                     crate::with_app(|app| app.apply_branding());
@@ -5066,7 +5092,7 @@ impl App {
             self.toast("Install Playnite to import your game libraries");
             return;
         }
-        match self.playnite_link("playnite://win2console/sync") {
+        match self.playnite_link("playnite://win2console/sync", &[]) {
             Ok(_) => {
                 self.scanning = true;
                 self.sync_started = Instant::now();
@@ -5077,11 +5103,16 @@ impl App {
     }
 
     /// Sends Playnite a `playnite://` link, starting it without its splash screen if it isn't running.
-    fn playnite_link(&self, uri: &str) -> std::io::Result<Option<u32>> {
+    fn playnite_link(&self, uri: &str, extra: &[&str]) -> std::io::Result<Option<u32>> {
         let spec = match &self.playnite_exe {
             Some(exe) => cs_core::LaunchSpec::Exe {
                 path: exe.clone(),
-                args: vec!["--hidesplashscreen".into(), "--uridata".into(), format!("\"{uri}\"")],
+                args: ["--hidesplashscreen"]
+                    .iter()
+                    .chain(extra)
+                    .map(|a| a.to_string())
+                    .chain(["--uridata".into(), format!("\"{uri}\"")])
+                    .collect(),
                 working_dir: exe.parent().map(Path::to_path_buf),
             },
             None => cs_core::LaunchSpec::Uri { uri: uri.into() },
@@ -5143,7 +5174,7 @@ impl App {
         if !e.installed {
             // Not-installed games carry their Playnite install link as the launch action.
             let result = match &e.game.launch {
-                cs_core::LaunchSpec::Uri { uri } if uri.starts_with("playnite://") => self.playnite_link(uri),
+                cs_core::LaunchSpec::Uri { uri } if uri.starts_with("playnite://") => self.playnite_link(uri, &[]),
                 spec => cs_platform::process::launch(spec),
             };
             match result {
@@ -5184,7 +5215,7 @@ impl App {
     fn toast(&mut self, message: impl Into<SharedString>) {
         let message = message.into();
         // While playing, also show it over the game.
-        if self.running.is_some() && !cs_platform::window::own_window_is_foreground() {
+        if !cs_platform::window::own_window_is_foreground() {
             self.notify_over_game(&message);
         }
         self.toast_in_app(&message);
@@ -5803,6 +5834,9 @@ impl App {
     }
 
     pub fn set_window_focused(&mut self, focused: bool) {
+        if focused && self.ingame.is_none() {
+            self.away = false;
+        }
         // Switching back to Win2Console by hand ends desktop mode.
         if focused && self.desktop && self.ingame.is_none() {
             self.leave_desktop();
